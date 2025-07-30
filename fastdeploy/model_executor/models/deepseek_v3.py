@@ -44,6 +44,7 @@ from fastdeploy.model_executor.layers.rotary_embedding import (
     DeepseekScalingRotaryEmbedding,
 )
 from fastdeploy.model_executor.models.model_base import ModelForCasualLM
+from fastdeploy.model_executor.graph_optimization.decorator import support_graph_optimization
 from fastdeploy.platforms import current_platform
 
 if current_platform.is_cuda():
@@ -500,7 +501,7 @@ class DeepSeekV3DecoderLayer(nn.Layer):
         hidden_states = self.mlp(hidden_states)
         return hidden_states, residual
 
-
+@support_graph_optimization
 class DeepSeekV3Model(nn.Layer):
     """
     DeepSeekV3Model
@@ -597,6 +598,10 @@ class DeepseekV3ForCausalLM(ModelForCasualLM):
             prefix="lm_head",
         )
 
+        # 预先分配足够大的静态 Tensor
+        self.position_ids_buffer = paddle.empty([fd_config.parallel_config.max_num_batched_tokens], dtype=paddle.int32)
+        self.mask_encoder_batch_buffer = paddle.empty([fd_config.parallel_config.max_num_batched_tokens, 1], dtype=paddle.int32)
+
     @classmethod
     def name(cls):
         """ """
@@ -622,17 +627,37 @@ class DeepseekV3ForCausalLM(ModelForCasualLM):
         seq_lens_encoder = forward_meta.seq_lens_encoder
         seq_lens_decoder = forward_meta.seq_lens_decoder
         seq_lens_this_time = forward_meta.seq_lens_this_time
-        position_ids_shape = paddle.sum(seq_lens_this_time)
-        position_ids = paddle.empty(shape=position_ids_shape, dtype=seq_lens_encoder.dtype)
-        mask_encoder_batch = paddle.empty(shape=position_ids_shape, dtype=seq_lens_encoder.dtype).unsqueeze(1)
+        
+        
+        # position_ids_shape = paddle.sum(seq_lens_this_time)
+        # position_ids = paddle.empty(shape=position_ids_shape, dtype=seq_lens_encoder.dtype)
+        # mask_encoder_batch = paddle.empty(shape=position_ids_shape, dtype=seq_lens_encoder.dtype).unsqueeze(1)
 
+        # 1. 计算当前实际需要的长度
+        current_total_tokens = paddle.sum(seq_lens_this_time)
+
+        # 2. 【关键修改】使用切片替代 paddle.empty
+        # 从预分配的 buffer 中切出当前需要的部分
+        # 注意: 需有机制确保 current_total_tokens <= self.position_ids_buffer.shape[0]
+        position_ids = self.position_ids_buffer[:current_total_tokens]
+        mask_encoder_batch = self.mask_encoder_batch_buffer[:current_total_tokens]
+
+        # 3. 在切片上执行填充操作 (这部分不变)
         get_position_ids_and_mask_encoder_batch(
             seq_lens_encoder,
             seq_lens_decoder,
             seq_lens_this_time,
-            position_ids,
-            mask_encoder_batch,
+            position_ids,          # 传入的是切片
+            mask_encoder_batch,    # 传入的是切片
         )
+
+        # get_position_ids_and_mask_encoder_batch(
+        #     seq_lens_encoder,
+        #     seq_lens_decoder,
+        #     seq_lens_this_time,
+        #     position_ids,
+        #     mask_encoder_batch,
+        # )
 
         return position_ids, mask_encoder_batch
 

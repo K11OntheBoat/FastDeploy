@@ -289,6 +289,9 @@ class GPUModelRunner(ModelRunnerBase):
         TODO(gongshaotian): Refactor this func
         """
 
+        if "caches" not in self.share_inputs:
+            self.initialize_kv_cache()
+            
         # NOTE(luotingdan): Set environment variable of prefill node
         if req_dicts[-1].disaggregate_info is not None and req_dicts[-1].disaggregate_info["role"] == "prefill":
             os.environ["PREFILL_NODE_ONE_STEP_STOP"] = "1"
@@ -825,16 +828,22 @@ class GPUModelRunner(ModelRunnerBase):
         )
         local_rank = self.local_rank % self.parallel_config.tensor_parallel_size
 
+        #print("===RYanDebug, #730 the local_rank is:", local_rank)
+
         if not profile and (
             self.parallel_config.enable_prefix_caching or self.parallel_config.splitwise_role != "mixed"
         ):
             cache_kvs_list = []
             for i in range(self.model_config.num_hidden_layers):
+                #print("===RYanDebug, the self.device_id is:", self.device_id)
+                #print("===RYanDebug, the local_rank is:", local_rank)
                 key_cache = paddle.empty(shape=[], dtype=cache_type)
                 key_cache_name = f"key_caches_{i}_rank{local_rank}.device{self.device_id}"
-                val_cache_name = f"value_caches_{i}_rank{local_rank}.device{self.device_id}"
+                
                 key_cache = share_external_data(key_cache, key_cache_name, kv_cache_shape)
                 cache_kvs_list.append(key_cache)
+
+                val_cache_name = f"value_caches_{i}_rank{local_rank}.device{self.device_id}"
                 value_cache = paddle.empty(shape=[], dtype=cache_type)
                 value_cache = share_external_data(value_cache, val_cache_name, kv_cache_shape)
                 cache_kvs_list.append(value_cache)
@@ -1363,7 +1372,8 @@ class GPUModelRunner(ModelRunnerBase):
         self.num_gpu_blocks = num_gpu_blocks
 
         # Reset block table and kv cache with global block num
-        self.initialize_kv_cache()
+        # print("===RyanDebug, comments 1270#  self.initialize_kv_cache() ===!!!!")
+        # self.initialize_kv_cache()
 
         # Reset free list
         free_list = list(
