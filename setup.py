@@ -25,6 +25,7 @@ from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.install import install
 from wheel.bdist_wheel import bdist_wheel
+import pybind11
 
 long_description = "FastDeploy: Large Language Model Serving.\n\n"
 long_description += "GitHub: https://github.com/PaddlePaddle/FastDeploy\n"
@@ -87,13 +88,15 @@ class CMakeBuild(build_ext):
         extdir = ext_fullpath.parent.resolve()
         cfg = "Debug" if int(os.environ.get("DEBUG", 0)) else "Release"
 
+        pybind11_cmake_dir = pybind11.get_cmake_dir()
         cmake_args = [
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}{os.sep}",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DCMAKE_BUILD_TYPE={cfg}",
-            "-DVERSION_INFO=",
-            "-DPYBIND11_PYTHON_VERSION=",
-            "-DPYTHON_VERSION=",
+            f"-Dpybind11_DIR={pybind11_cmake_dir}",
+            # "-DVERSION_INFO=",
+            # "-DPYBIND11_PYTHON_VERSION=",
+            # "-DPYTHON_VERSION=",
             f"-DPYTHON_INCLUDE_DIR={sys.prefix}/include/python{sys.version_info.major}.{sys.version_info.minor}",
             f"-DPYTHON_LIBRARY={sys.prefix}/lib/libpython{sys.version_info.major}.{sys.version_info.minor}.so",
         ]

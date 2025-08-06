@@ -22,6 +22,7 @@ from enum import Enum
 from typing import Literal, Optional
 
 from paddleformers.transformers.configuration_utils import PretrainedConfig
+import paddle
 
 from fastdeploy import envs
 from fastdeploy.model_executor.layers.quantization.quant_base import QuantConfigBase
@@ -153,6 +154,27 @@ class ParallelConfig:
         self.tensor_parallel_size = 1  # TP degree
         self.expert_parallel_rank = 0  # EP rank ID
         self.expert_parallel_size = 1  # EP degree
+
+        
+        # Ryan_AFD Device
+        attn_devices_str = os.getenv("ATTN_DEVICES", "0")
+        attn_devices = [int(x.strip()) for x in attn_devices_str.split(',')]
+        self.attn_group = paddle.distributed.new_group(attn_devices)
+
+        moe_devices_str = os.getenv("MOE_DEVICES", '0')
+        moe_devices = [int(x.strip()) for x in moe_devices_str.split(',')]
+        self.moe_ep_group = paddle.distributed.new_group(moe_devices)
+
+        print("===RyanDebug, the self.attn_group is:", self.attn_group)
+        print("===RyanDebug, the self.moe_ep_group is:", self.moe_ep_group)
+
+        # Different AF Role
+        self.ep_rank = paddle.distributed.get_rank(self.moe_ep_group)
+        self.is_attention_role = paddle.distributed.get_rank(self.attn_group) >= 0
+        self.is_moe_role = paddle.distributed.get_rank(self.moe_ep_group) >= 0
+        print("==RyanDebug, the self.ep_rank is:",self.ep_rank)
+        print("==RyanDebug, the self.is_attention_role and self.is_moe_role are :", self.is_attention_role, self.is_moe_role)
+
         # The embedding weight distributed on your gpu cards is divided by row or column.
         # Defaults to False means divide by row. When vocab_size can not be divided by world_size
         # but hidden_size can, we can consider split embedding weight by column.

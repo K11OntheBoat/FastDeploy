@@ -150,13 +150,18 @@ class PaddleDisWorkerProc:
             self.parallel_config.engine_worker_queue_port,
         )
         self.max_chips_per_node = 16 if current_platform.is_iluvatar() else 8
-        self.task_queue = TaskQueue(
-            address=task_address,
-            is_server=False,
-            num_client=self.parallel_config.tensor_parallel_size,
-            client_id=self.parallel_config.tensor_parallel_rank,
-            local_data_parallel_id=self.parallel_config.expert_parallel_rank,
-        )
+        print("===RyanDebug, the local_data_parallel_id=paddle.distributed.get_rank() is :", paddle.distributed.get_rank())
+        print("===RyanDebug, remove task_queue of Hzz1 , the self.fd_config.parallel_config.ep_rank is: ", self.fd_config.parallel_config.ep_rank)
+        
+        #if self.fd_config.parallel_config.ep_rank < 0:
+        if self.fd_config.parallel_config.is_attention_role:
+            self.task_queue = TaskQueue(
+                address=task_address,
+                is_server=False,
+                num_client=self.parallel_config.tensor_parallel_size,
+                client_id=self.parallel_config.tensor_parallel_rank,
+                local_data_parallel_id=paddle.distributed.get_rank(),
+            )
 
     def init_health_status(self) -> None:
         """
@@ -241,8 +246,11 @@ class PaddleDisWorkerProc:
         """
         while True:
             self.worker_healthy_live_signal.value[self.local_rank % self.max_chips_per_node] = int(time.time())
+            assert self.fd_config.parallel_config.tensor_parallel_rank == 0
+            rank = paddle.distributed.get_rank()
 
-            if self.fd_config.parallel_config.tensor_parallel_rank == 0 and self.task_queue.num_tasks() > 0:
+            print("===RyanDebug event_loop_ep, Hzz1-MoE should not show?? === ")
+            if self.fd_config.parallel_config.tensor_parallel_rank == 0 and self.task_queue.num_tasks() > 0 and rank < 8:
                 tasks, read_finish = self.task_queue.get_tasks()
 
                 req_dicts = []
@@ -255,6 +263,23 @@ class PaddleDisWorkerProc:
                 )
                 # Process prefill inputs
                 self.worker.preprocess_new_task(req_dicts)
+            
+
+            print("===RyanDebug, Collect req > 8 and do execute model ==")
+            tmp = self.worker.model_runner.not_need_stop().item()
+            tmp = paddle.to_tensor(tmp).reshape([1])
+            tmps = []
+            paddle.distributed.all_gather(tmps, tmp)
+            tmps = paddle.concat(tmps,axis=0)
+            tmp = tmps.sum().item()
+            if tmp < self.worker.model_runner.parallel_config.attn_group.nranks:
+                # 先不推理，必须等到Attn每张卡上都有数据！
+                # 我才开始推理！
+                time.sleep(0.1)
+                continue
+            else:
+                print((self.worker.model_runner.share_inputs["seq_lens_this_time"] > 0).sum().item())
+                print("开始推理啦")
 
             # Execute model to generate token. The generated token will be written to the buffer.
             # These generated tokens can be obtained through get_output op.
@@ -609,19 +634,26 @@ def initialize_fd_config(args, ranks: int = 1, local_rank: int = 0) -> FDConfig:
     parallel_config = ParallelConfig(vars(args))
     parallel_config.tensor_parallel_size = args.tensor_parallel_size
     parallel_config.tensor_parallel_rank = local_rank % args.tensor_parallel_size
-    parallel_config.expert_parallel_size = args.expert_parallel_size
+    print("===RyanDeubg, set expert_parallel_size to 8 =====")
+    parallel_config.expert_parallel_size = 8
+
+    # Hzz1-MoE only ep_rank
+    ep_rank = parallel_config.ep_rank
+    print("===RyanDebug, Hzz1-MoE only ep_rank = ", ep_rank)
+
     # config for EP
-    if args.expert_parallel_size > 1:
+    if args.expert_parallel_size > 1 and ep_rank >= 0:
+        print("===RyanDebug, Hzz1-MoE only !!!!!====")
         expert_parallel_rank = int(local_rank / args.tensor_parallel_size)
         if isinstance(model_config.moe_num_experts, list):
             num_experts = model_config.moe_num_experts[0]
         else:
             num_experts = model_config.moe_num_experts
 
-        num_experts_per_rank = num_experts // args.expert_parallel_size
-        num_experts_start_offset = expert_parallel_rank * num_experts_per_rank
+        num_experts_per_rank = num_experts // 8
+        num_experts_start_offset = ep_rank * num_experts_per_rank
 
-        parallel_config.expert_parallel_rank = expert_parallel_rank
+        parallel_config.expert_parallel_rank = ep_rank
         parallel_config.num_experts_per_rank = num_experts_per_rank
         parallel_config.num_experts_start_offset = num_experts_start_offset
 

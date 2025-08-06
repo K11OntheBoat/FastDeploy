@@ -533,7 +533,7 @@ class ParallelConfig:
         self.tensor_parallel_size = tensor_parallel_size
         self.data_parallel_size = data_parallel_size
         self.enable_expert_parallel = enable_expert_parallel
-        self.expert_parallel_size = data_parallel_size
+        self.expert_parallel_size = 8
         self.local_data_parallel_id = 0
         self.enable_custom_all_reduce = enable_custom_all_reduce
 
@@ -716,6 +716,7 @@ class Config:
             for idx, ip in enumerate(self.ips):
                 if ip == self.master_ip:
                     self.node_rank = idx
+        
 
         self.max_model_len = max_model_len
         self.max_num_seqs = max_num_seqs

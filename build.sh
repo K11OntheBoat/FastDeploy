@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+export ENABLE_FD_RDMA=1
+ENABLE_FD_RDMA=1
 BUILD_WHEEL=${1:-1}
 PYTHON_VERSION=${2:-"python"}
 export python=$PYTHON_VERSION

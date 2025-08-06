@@ -102,6 +102,10 @@ class CutlassMoEMethod(MoEMethodBase):
         """
         Paddle Cutlass compute Fused MoE.
         """
+
+        assert layer.up_gate_proj_weight.shape[0] == token_nums_per_expert.shape[0], f"{layer.up_gate_proj_weight.shape[0]},{token_nums_per_expert.shape[0]}"
+        assert layer.down_proj_weight.shape[0] == token_nums_per_expert.shape[0]
+
         if current_platform.is_iluvatar():
             return fastdeploy.model_executor.ops.iluvatar.moe_expert_ffn(
                 permute_input,
@@ -224,16 +228,22 @@ class CutlassMoEMethod(MoEMethodBase):
         else:
             raise NotImplementedError
 
-        ffn_out = self.compute_ffn(
-            layer,
-            permute_input,
-            token_nums_per_expert.cast("int64"),
-            expert_idx_per_token,
-            True,
-        )
+        if permute_input is not None:
+            ffn_out = self.compute_ffn(
+                layer,
+                permute_input,
+                token_nums_per_expert.cast("int64"),
+                expert_idx_per_token,
+                True,
+            )
+            #ffn_out = paddle.assign(permute_input)
+        else:
+            ffn_out = None
 
         # 4. EP combine
-        return self.ep_decoder_runner.combine(ffn_out, topk_idx, topk_weights, handle)
+        #return self.ep_decoder_runner.combine(ffn_out, topk_idx, topk_weights, handle)
+        res = self.ep_decoder_runner.combine(ffn_out, topk_idx, topk_weights, handle)
+        return res
 
     def apply_tp(
         self,
@@ -479,7 +489,7 @@ class CutlassWeightOnlyMoEMethod(CutlassMoEMethod):
 
             weight_list = []
             weight_scale_list = []
-            for i in range(layer.num_local_experts):
+            for i in range(len(down_proj_weights)):
                 quant_weight, scale = weight_quantize(weight_tensor[i], algo=self.moe_quant_type)
                 weight_list.append(quant_weight)
                 weight_scale_list.append(scale)

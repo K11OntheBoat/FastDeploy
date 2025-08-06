@@ -1173,9 +1173,17 @@ class GPUModelRunner(ModelRunnerBase):
             intermediate_tensors:
         """
         # NOTE(wufeisheng): For Expert Parallelism
-        if not self.not_need_stop():
-            self._execute_empty_input()
+        # if not self.not_need_stop():
+        #     self._execute_empty_input()
+        #     return None
+
+        if self.fd_config.parallel_config.is_attention_role:
+            pass
+        else:
+            # is_moe_role
+            model_output = self.model(None, None)
             return None
+
 
         # 1. Prepare inputs of model and sampler.
         skip_idx_list = self._get_skip_idx(model_forward_batch)

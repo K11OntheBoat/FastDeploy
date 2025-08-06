@@ -254,6 +254,7 @@ class LLMEngine:
             time.sleep(1)
 
             if self.cfg.parallel_config.enable_expert_parallel and self.cfg.parallel_config.data_parallel_size > 1:
+                print("===RyanDebug, Hzz1-MoE Should Not show this, dp set to 1 ====")
                 self.dp_processed = []
                 for i in range(
                     1,

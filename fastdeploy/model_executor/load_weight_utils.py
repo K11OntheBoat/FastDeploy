@@ -92,6 +92,12 @@ def load_ep_checkpoint(model_path: str, fd_config: FDConfig, return_numpy: bool 
         return base_range
 
     for i in range(fd_config.model_config.moe_layer_start_index, fd_config.model_config.num_hidden_layers):
+
+        # Attetnion 不需要 load MoE权重.
+        if fd_config.parallel_config.is_attention_role:
+            num_local_ffn_keys = []
+            continue
+        
         for j in get_expert_ranges(fd_config):
             up_gate_proj_key = f"ernie.layers.{i}.mlp.experts.{j}.up_gate_proj.weight"
             down_proj_key = f"ernie.layers.{i}.mlp.experts.{j}.down_proj.weight"
