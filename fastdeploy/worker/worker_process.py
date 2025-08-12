@@ -285,7 +285,8 @@ class PaddleDisWorkerProc:
             paddle.distributed.all_gather(tmps, tmp)
             tmps = paddle.concat(tmps,axis=0)
             tmp = tmps.sum().item()
-            if tmp < self.worker.model_runner.parallel_config.attn_group.nranks:
+            #if tmp < self.worker.model_runner.parallel_config.attn_group.nranks:
+            if tmp == 0:
                 # 先不推理，必须等到Attn每张卡上都有数据！
                 # 我才开始推理！
                 print("===RyanDebug, tmp < 16 , sleeeping !!===")
@@ -443,17 +444,18 @@ class PaddleDisWorkerProc:
 
         logger.info(f"------- num_blocks_global: {num_blocks_local} --------")
         # wait engine launch cache_manager
-        if self.parallel_config.enable_prefix_caching or self.parallel_config.splitwise_role != "mixed":
-            launched_cache_manager_signal_data = np.zeros([1], dtype=np.int32)
-            self.launched_cache_manager_signal = IPCSignal(
-                name="launched_cache_manager_signal",
-                array=launched_cache_manager_signal_data,
-                dtype=np.int32,
-                suffix=self.parallel_config.engine_pid,
-                create=False,
-            )
-            while np.any(self.launched_cache_manager_signal.value[0] <= 0):
-                time.sleep(0.01)
+        if self.fd_config.parallel_config.is_attention_role:
+            if self.parallel_config.enable_prefix_caching or self.parallel_config.splitwise_role != "mixed":
+                launched_cache_manager_signal_data = np.zeros([1], dtype=np.int32)
+                self.launched_cache_manager_signal = IPCSignal(
+                    name="launched_cache_manager_signal",
+                    array=launched_cache_manager_signal_data,
+                    dtype=np.int32,
+                    suffix=self.parallel_config.engine_pid,
+                    create=False,
+                )
+                while np.any(self.launched_cache_manager_signal.value[0] <= 0):
+                    time.sleep(0.01)
         # 4. init kv_cache with accurate num_blocks
         self.worker.initialize_cache(num_gpu_blocks=num_blocks_local)
 

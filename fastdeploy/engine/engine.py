@@ -198,14 +198,6 @@ class LLMEngine:
             )
             self.launched_cache_manager_signal.value[0] = 1
 
-        self.worker_proc = self._start_worker_service()
-        console_logger.info("Waitting worker processes ready...")
-        time.sleep(5)
-        self.worker_init_status = dict()
-        if not self.check_worker_initialize_status():
-            console_logger.error("Failed to launch worker processes, check log/workerlog.* for more details.")
-            return False
-
         # Start warmup if enabled
         if self.cfg.use_warmup:
             console_logger.info("Starting warmup")
@@ -276,6 +268,15 @@ class LLMEngine:
                         + f" data parallel id {i}"
                     )
                     self.dp_processed[-1].start()
+
+
+        self.worker_proc = self._start_worker_service()
+        console_logger.info("Waitting worker processes ready...")
+        time.sleep(5)
+        self.worker_init_status = dict()
+        if not self.check_worker_initialize_status():
+            console_logger.error("Failed to launch worker processes, check log/workerlog.* for more details.")
+            return False
 
         console_logger.info(f"Worker processes are launched with {time.time() - start_time} seconds.")
         return True

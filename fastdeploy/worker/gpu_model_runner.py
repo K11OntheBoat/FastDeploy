@@ -1173,11 +1173,11 @@ class GPUModelRunner(ModelRunnerBase):
             intermediate_tensors:
         """
         # NOTE(wufeisheng): For Expert Parallelism
-        if not self.not_need_stop():
-            # self._execute_empty_input()
-            # return None
-            pass
-            return None
+        # if not self.not_need_stop():
+        #     # self._execute_empty_input()
+        #     # return None
+        #     pass
+        #     return None
 
         if self.fd_config.parallel_config.is_attention_role:
             pass
@@ -1383,7 +1383,7 @@ class GPUModelRunner(ModelRunnerBase):
 
         # Reset block table and kv cache with global block num
         # print("===RyanDebug, comments 1270#  self.initialize_kv_cache() ===!!!!")
-        # self.initialize_kv_cache()
+        self.initialize_kv_cache()
 
         # Reset free list
         free_list = list(
