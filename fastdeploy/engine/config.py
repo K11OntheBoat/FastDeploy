@@ -717,6 +717,8 @@ class Config:
                 if ip == self.master_ip:
                     self.node_rank = idx
         
+        if self.parallel_config.data_parallel_size > 1 :
+            self.master_ip = "0.0.0.0"
 
         self.max_model_len = max_model_len
         self.max_num_seqs = max_num_seqs

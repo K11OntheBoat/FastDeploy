@@ -159,6 +159,7 @@ class ParallelConfig:
         # Ryan_AFD Device
         attn_devices_str = os.getenv("ATTN_DEVICES", "0")
         attn_devices = [int(x.strip()) for x in attn_devices_str.split(',')]
+        print("===RyanDebug, the ATTN_DEVICES is: ", attn_devices)
         self.attn_group = paddle.distributed.new_group(attn_devices)
 
         moe_devices_str = os.getenv("MOE_DEVICES", '0')

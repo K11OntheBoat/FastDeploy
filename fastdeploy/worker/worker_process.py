@@ -211,34 +211,46 @@ class PaddleDisWorkerProc:
         )
 
         # init exist_task_signal
-        workers_exist_task = np.zeros([self.parallel_config.expert_parallel_size], dtype=np.int32)
-        self.exist_task_signal = IPCSignal(
-            name="exist_task_signal",
-            array=workers_exist_task,
-            dtype=np.int32,
-            suffix=self.parallel_config.engine_pid,
-            create=False,
-        )
+        if self.fd_config.parallel_config.is_attention_role:
+            print("=== RyanDebug, set exist_task_signal of Attn ===")
+            workers_exist_task = np.zeros([self.parallel_config.expert_parallel_size], dtype=np.int32)
+            self.exist_task_signal = IPCSignal(
+                name="exist_task_signal",
+                array=workers_exist_task,
+                dtype=np.int32,
+                suffix=self.parallel_config.engine_pid,
+                create=False,
+            )
 
-        # init exist_swapped_task_signal
-        workers_swapped_task = np.zeros(shape=[self.parallel_config.expert_parallel_size], dtype=np.int32)
-        self.exist_swapped_task_signal = IPCSignal(
-            name="exist_swapped_task_signal",
-            array=workers_swapped_task,
-            dtype=np.int32,
-            suffix=self.parallel_config.engine_pid,
-            create=False,
-        )
+            # init exist_swapped_task_signal
+            workers_swapped_task = np.zeros(shape=[self.parallel_config.expert_parallel_size], dtype=np.int32)
+            self.exist_swapped_task_signal = IPCSignal(
+                name="exist_swapped_task_signal",
+                array=workers_swapped_task,
+                dtype=np.int32,
+                suffix=self.parallel_config.engine_pid,
+                create=False,
+            )
+        else:
+            print("=== RyanDebug, set exist_task_signal of MoE ===")
+            workers_exist_task = np.zeros([1], dtype=np.int32)
+            self.exist_task_signal = IPCSignal(
+                name="exist_task_signal",
+                array=workers_exist_task,
+                dtype=np.int32,
+                suffix=self.parallel_config.engine_pid,
+                create=False,
+            )
 
-        # init exist_prefill_task_signal
-        exist_prefill_task_signal_data = np.zeros([1], dtype=np.int32)
-        self.exist_prefill_task_signal = IPCSignal(
-            name="exist_prefill_task_signal",
-            array=exist_prefill_task_signal_data,
-            dtype=np.int32,
-            suffix=self.parallel_config.engine_pid,
-            create=False,
-        )
+            # init exist_prefill_task_signal
+            exist_prefill_task_signal_data = np.zeros([1], dtype=np.int32)
+            self.exist_prefill_task_signal = IPCSignal(
+                name="exist_prefill_task_signal",
+                array=exist_prefill_task_signal_data,
+                dtype=np.int32,
+                suffix=self.parallel_config.engine_pid,
+                create=False,
+            )
 
     def event_loop_ep(self) -> None:
         """
@@ -249,8 +261,9 @@ class PaddleDisWorkerProc:
             assert self.fd_config.parallel_config.tensor_parallel_rank == 0
             rank = paddle.distributed.get_rank()
 
-            print("===RyanDebug event_loop_ep, Hzz1-MoE should not show?? === ")
-            if self.fd_config.parallel_config.tensor_parallel_rank == 0 and self.task_queue.num_tasks() > 0 and rank < 8:
+            print("===RyanDebug event_loop_ep, Hzz1-MoE should not show?? ===, the rank is:", rank)
+            if rank < 16 and self.fd_config.parallel_config.tensor_parallel_rank == 0 and self.task_queue.num_tasks() > 0 :
+                print("===RyanDebug, before get_tasks, the rank is:", rank)
                 tasks, read_finish = self.task_queue.get_tasks()
 
                 req_dicts = []
@@ -275,6 +288,7 @@ class PaddleDisWorkerProc:
             if tmp < self.worker.model_runner.parallel_config.attn_group.nranks:
                 # 先不推理，必须等到Attn每张卡上都有数据！
                 # 我才开始推理！
+                print("===RyanDebug, tmp < 16 , sleeeping !!===")
                 time.sleep(0.1)
                 continue
             else:

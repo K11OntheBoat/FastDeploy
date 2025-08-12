@@ -412,7 +412,7 @@ class Ernie4_5_Model(nn.Layer):
 
     def forward(self, ids_remove_padding: paddle.Tensor, forward_meta: ForwardMeta):
 
-        IsH20 = self.fd_config.parallel_config.is_H20
+        IsH20 = self.fd_config.parallel_config.is_attention_role
         # 暂时设置成1!
         split_num = 3
         all_hidden_states = [None] * split_num
@@ -464,8 +464,8 @@ class Ernie4_5_Model(nn.Layer):
         print(len([a for a in all_hidden_states if a is not None]))
         print("大王啊")
 
-        IsH20 = self.fd_config.parallel_config.is_H20
-        IsH100 = self.fd_config.parallel_config.is_H100
+        IsH20 = self.fd_config.parallel_config.is_attention_role
+        IsH100 = self.fd_config.parallel_config.is_moe_role
         runner = self.layers[3].mlp.fused_moe.quant_method.ep_decoder_runner
 
         paddle.distributed.barrier()
@@ -693,7 +693,7 @@ class Ernie4_5_Model(nn.Layer):
         forward_meta: ForwardMeta,
     ):  
 
-        IsH20 = self.fd_config.parallel_config.is_H20
+        IsH20 = self.fd_config.parallel_config.is_attention_role
         hidden_states = None
         if IsH20:
             hidden_states = self.embed_tokens(ids_remove_padding=ids_remove_padding)
