@@ -705,7 +705,7 @@ class Config:
             self.master_ip = self.ips[0]
         else:
             self.ips = self.ips.split(",")
-            self.master_ip = self.ips[0]
+            self.master_ip = get_host_ip()
 
         if self.ips is None:
             self.nnode = 1
@@ -714,9 +714,11 @@ class Config:
             self.nnode = len(self.ips)
 
             for idx, ip in enumerate(self.ips):
-                if ip == self.master_ip:
+                if ip == get_host_ip():
                     self.node_rank = idx
         
+        llm_logger.info(f"==RyanDebug. the self.node_rank is:{self.node_rank}")
+
         if self.parallel_config.data_parallel_size > 1 :
             self.master_ip = "0.0.0.0"
 

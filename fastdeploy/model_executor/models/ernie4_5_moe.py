@@ -477,11 +477,11 @@ class Ernie4_5_Model(nn.Layer):
         runner = self.layers[3].mlp.fused_moe.quant_method.ep_decoder_runner
 
 
-        print("11111djklfhkjldsfhjkld")
-        paddle.distributed.barrier()
-        paddle.device.synchronize()
-        paddle.distributed.barrier()
-        print("djklfhkjldsfhjkld")
+        # print("11111djklfhkjldsfhjkld")
+        # paddle.distributed.barrier()
+        # paddle.device.synchronize()
+        # paddle.distributed.barrier()
+        # print("djklfhkjldsfhjkld")
 
 
         attention_input = [None] * split_num
@@ -527,6 +527,8 @@ class Ernie4_5_Model(nn.Layer):
         if IsH20:
             def compute_atten(layer_id, i):
                 #print(f"compute_atten({layer_id}, {i})")
+                # <<< Added Print >>>
+                print(f"[H20] Computing Attention for layer {layer_id}, microbatch {i}")
                 hidden_states, residual, topk_idx, topk_weights = self.layers[layer_id].forward_attn(attention_input[i][0], attention_input[i][1], attention_input[i][2])
                 
                 attention_out[i] = [hidden_states, residual, topk_idx, topk_weights]
@@ -643,6 +645,8 @@ class Ernie4_5_Model(nn.Layer):
 
             def compute_moe(layer_id, i):
                 #print(f"compute_moe({layer_id}, {i})")
+                # <<< Added Print >>>
+                print(f"[H100/MoE] Computing MoE FFN for layer {layer_id}, microbatch {i}")
                 ffn_out = self.layers[layer_id].compute_moe_ffn(moe_input[i][0], moe_input[i][1])
                 moe_out[i] = ffn_out
 
@@ -691,12 +695,18 @@ class Ernie4_5_Model(nn.Layer):
             paddle.device.synchronize()
 
         if IsH20:
+            # <<< Added Print >>>
+            print("[H20] All pipelined layers are finished. Finalizing output.")
             hidden_states = paddle.concat([attention_input[0][1], attention_input[1][1], attention_input[2][1]], axis=0)
             residuals = paddle.concat([attention_input[0][2], attention_input[1][2], attention_input[2][2]], axis=0)
             hidden_states = hidden_states + residuals
             out = self.norm(hidden_states)
+            # <<< Added Print >>>
+            print("[H20] Computation complete. Returning final tensor.")
             return out
         else:
+            # <<< Added Print >>>
+            print("[H100/MoE] All computations finished.")
             # MoE机器返回None
             return None
 

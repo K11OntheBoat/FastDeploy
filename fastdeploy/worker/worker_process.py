@@ -256,6 +256,8 @@ class PaddleDisWorkerProc:
         """
         Tmp loop function for ep utill DP is supported
         """
+        initial_sync_done = False
+        
         while True:
             self.worker_healthy_live_signal.value[self.local_rank % self.max_chips_per_node] = int(time.time())
             assert self.fd_config.parallel_config.tensor_parallel_rank == 0
@@ -263,8 +265,10 @@ class PaddleDisWorkerProc:
 
             print("===RyanDebug event_loop_ep, Hzz1-MoE should not show?? ===, the rank is:", rank)
             if rank < 16 and self.fd_config.parallel_config.tensor_parallel_rank == 0 and self.task_queue.num_tasks() > 0 :
-                print("===RyanDebug, before get_tasks, the rank is:", rank)
+                
+                print("===RyanDebug, Attn begin GET_TASK! ====")
                 tasks, read_finish = self.task_queue.get_tasks()
+
 
                 req_dicts = []
                 for req_dict, bsz in tasks:
@@ -277,28 +281,30 @@ class PaddleDisWorkerProc:
                 # Process prefill inputs
                 self.worker.preprocess_new_task(req_dicts)
             
+            if not initial_sync_done:
+                tmp = self.worker.model_runner.not_need_stop().item()
+                tmp_tensor = paddle.to_tensor(tmp, dtype='int32').reshape([1])
+                tmps = []
+                paddle.distributed.all_gather(tmps, tmp_tensor)
+                tmps = paddle.concat(tmps, axis=0)
+                print("===RyanDebug, after all_gather, the tmps is :", tmps)
+                total_ready_ranks = tmps.sum().item()
 
-            print("===RyanDebug, Collect req > 8 and do execute model ==")
-            tmp = self.worker.model_runner.not_need_stop().item()
-            tmp = paddle.to_tensor(tmp).reshape([1])
-            tmps = []
-            paddle.distributed.all_gather(tmps, tmp)
-            tmps = paddle.concat(tmps,axis=0)
-            tmp = tmps.sum().item()
-            #if tmp < self.worker.model_runner.parallel_config.attn_group.nranks:
-            if tmp == 0:
-                # 先不推理，必须等到Attn每张卡上都有数据！
-                # 我才开始推理！
-                print("===RyanDebug, tmp < 16 , sleeeping !!===")
-                time.sleep(0.1)
-                continue
-            else:
-                print((self.worker.model_runner.share_inputs["seq_lens_this_time"] > 0).sum().item())
-                print("开始推理啦")
+                if total_ready_ranks == 0: 
+                    # 如果每一张卡上都没有任务. 继续等待
+                    time.sleep(0.01)
+                    continue
+                else:
+                    print("开始执行第一次推理")
+                    initial_sync_done = True
 
-            # Execute model to generate token. The generated token will be written to the buffer.
-            # These generated tokens can be obtained through get_output op.
+            print("==RyanDebug,seq_lens_this_time is :",self.worker.model_runner.share_inputs["seq_lens_this_time"])            
+            print("开始推理啦") # 这个日志现在表示“准备好执行模型了”
+            # Execute model to generate token.
             self.worker.execute_model()
+            paddle.device.synchronize()
+            print("===RyanDebug, Finish one execute_model=====")
+
 
     def event_loop_normal(self) -> None:
         """Main event loop for Paddle Distrubuted Workers.
@@ -444,18 +450,18 @@ class PaddleDisWorkerProc:
 
         logger.info(f"------- num_blocks_global: {num_blocks_local} --------")
         # wait engine launch cache_manager
-        if self.fd_config.parallel_config.is_attention_role:
-            if self.parallel_config.enable_prefix_caching or self.parallel_config.splitwise_role != "mixed":
-                launched_cache_manager_signal_data = np.zeros([1], dtype=np.int32)
-                self.launched_cache_manager_signal = IPCSignal(
-                    name="launched_cache_manager_signal",
-                    array=launched_cache_manager_signal_data,
-                    dtype=np.int32,
-                    suffix=self.parallel_config.engine_pid,
-                    create=False,
-                )
-                while np.any(self.launched_cache_manager_signal.value[0] <= 0):
-                    time.sleep(0.01)
+        #if self.fd_config.parallel_config.is_attention_role:
+        if self.parallel_config.enable_prefix_caching or self.parallel_config.splitwise_role != "mixed":
+            launched_cache_manager_signal_data = np.zeros([1], dtype=np.int32)
+            self.launched_cache_manager_signal = IPCSignal(
+                name="launched_cache_manager_signal",
+                array=launched_cache_manager_signal_data,
+                dtype=np.int32,
+                suffix=self.parallel_config.engine_pid,
+                create=False,
+            )
+            while np.any(self.launched_cache_manager_signal.value[0] <= 0):
+                time.sleep(0.01)
         # 4. init kv_cache with accurate num_blocks
         self.worker.initialize_cache(num_gpu_blocks=num_blocks_local)
 
