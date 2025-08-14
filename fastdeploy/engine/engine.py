@@ -123,7 +123,7 @@ class LLMEngine:
                 cfg.max_num_seqs, cfg, cfg.tensor_parallel_size, cfg.splitwise_role
             )
 
-        os.environ["INFERENCE_MSG_QUEUE_ID"] = str(self.cfg.engine_worker_queue_port)
+        os.environ["INFERENCE_MSG_QUEUE_ID"] = str(self.cfg.engine_worker_queue_port + self.cfg.parallel_config.local_data_parallel_id)
 
         self.split_connector = SplitwiseConnector(cfg, self.scheduler, self.engine_worker_queue, self.resource_manager)
 
@@ -258,7 +258,7 @@ class LLMEngine:
                             target=start_expert_service,
                             args=(
                                 self.cfg,
-                                i + self.cfg.node_rank * self.cfg.worker_num_per_node,
+                                i + self.cfg.node_rank * self.cfg.worker_num_per_node,  
                                 self.ipc_signal_suffix,
                             ),
                         )

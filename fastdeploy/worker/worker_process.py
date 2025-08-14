@@ -302,7 +302,8 @@ class PaddleDisWorkerProc:
             print("开始推理啦") # 这个日志现在表示“准备好执行模型了”
             # Execute model to generate token.
             self.worker.execute_model()
-            paddle.device.synchronize()
+            #paddle.distributed.barrier()
+            #paddle.device.synchronize()
             print("===RyanDebug, Finish one execute_model=====")
 
 

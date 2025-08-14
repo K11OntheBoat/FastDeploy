@@ -477,11 +477,16 @@ class Ernie4_5_Model(nn.Layer):
         runner = self.layers[3].mlp.fused_moe.quant_method.ep_decoder_runner
 
 
-        # print("11111djklfhkjldsfhjkld")
-        # paddle.distributed.barrier()
-        # paddle.device.synchronize()
-        # paddle.distributed.barrier()
-        # print("djklfhkjldsfhjkld")
+        print("====RyanDebug EB45-Net ###480 ======")
+        debug_rank = paddle.distributed.get_rank()
+        print(f"[Rank {debug_rank}] 准备进入barrier前")
+        paddle.distributed.barrier()
+        print(f"[Rank {debug_rank}] 已通过barrier")
+        paddle.device.synchronize()
+        print(f"[Rank {debug_rank}] 设备同步完成")
+        paddle.distributed.barrier()
+        print(f"[Rank {debug_rank}] 第二个barrier完成")
+        print("====RyanDebug EB45-Net ###484 ======")
 
 
         attention_input = [None] * split_num
@@ -505,20 +510,20 @@ class Ernie4_5_Model(nn.Layer):
         self.barrier_id = -1
         def zkk_barrier():
             self.barrier_id += 1
-            #paddle.device.synchronize()
-            #paddle.distributed.barrier()
-            #print("到达", self.barrier_id)
-            #paddle.device.synchronize()
+            # paddle.device.synchronize()
+            # paddle.distributed.barrier()
+            # print("zkk_barrier 到达", self.barrier_id)
+            # paddle.device.synchronize()
 
         def send_sync(j):
-            #print(f"send_sync({j})")
+            print(f"send_sync({j})")
             send_events[j].current_stream_wait()
 
             tmp = send_hooks[j]()
             tmp.current_stream_wait()
 
         def receive_sync(j):
-            #print(f"receive_sync({j})")
+            print(f"receive_sync({j})")
             recv_events[j].current_stream_wait()
             tmp = recv_hooks[j]()
             tmp.current_stream_wait()
@@ -526,7 +531,7 @@ class Ernie4_5_Model(nn.Layer):
         # 先只搞第三层！
         if IsH20:
             def compute_atten(layer_id, i):
-                #print(f"compute_atten({layer_id}, {i})")
+                # print(f"compute_atten({layer_id}, {i})")
                 # <<< Added Print >>>
                 print(f"[H20] Computing Attention for layer {layer_id}, microbatch {i}")
                 hidden_states, residual, topk_idx, topk_weights = self.layers[layer_id].forward_attn(attention_input[i][0], attention_input[i][1], attention_input[i][2])
@@ -535,7 +540,7 @@ class Ernie4_5_Model(nn.Layer):
                 attention_input[i][2] = attention_out[i][1]
             
             def a2e_send(i):
-                #print(f"a2e_send({i})")
+                print(f"a2e_send({i})")
                 _, handle, event, a2e_isend_hook = runner.buffer.a2e_isend_two_stage_v3(
                     attention_out[i][0],
                     attention_out[i][2],
@@ -549,7 +554,7 @@ class Ernie4_5_Model(nn.Layer):
                 send_hooks[i] = a2e_isend_hook
 
             def e2a_receive(i):
-                #print(f"e2a_receive({i})")
+                print(f"e2a_receive({i})")
                 e2a_x, event, e2a_irecv_hook = runner.buffer.e2a_irecv_two_stage_v3(
                     attention_out[i][2],
                     attention_out[i][3],
@@ -563,6 +568,7 @@ class Ernie4_5_Model(nn.Layer):
 
                 attention_input[i][1] = e2a_x
 
+            print("===RyanDebug EB45-Net, #561 ===")
             compute_atten(3,0)
             a2e_send(0)
 
@@ -621,7 +627,7 @@ class Ernie4_5_Model(nn.Layer):
             moe_out = [None] * split_num
 
             def a2e_receive(i):
-                #print(f"a2e_receive({i})")
+                print(f"a2e_receive({i})")
                 (
                     packed_recv_x,
                     packed_recv_count,
@@ -651,7 +657,7 @@ class Ernie4_5_Model(nn.Layer):
                 moe_out[i] = ffn_out
 
             def e2a_send(i):
-                #print(f"e2a_send({i})")
+                print(f"e2a_send({i})")
                 event, e2a_isend_hook = runner.buffer.e2a_isend_two_stage_v3(
                     moe_out[i], 
                     runner.top_k,

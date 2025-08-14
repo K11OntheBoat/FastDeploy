@@ -717,6 +717,7 @@ class Config:
                 if ip == get_host_ip():
                     self.node_rank = idx
         
+
         llm_logger.info(f"==RyanDebug. the self.node_rank is:{self.node_rank}")
 
         if self.parallel_config.data_parallel_size > 1 :
@@ -763,6 +764,8 @@ class Config:
         else:
             self.worker_num_per_node = num_ranks
 
+        self.parallel_config.local_data_parallel_id = self.node_rank * self.worker_num_per_node
+        
         self.engine_worker_queue_port = engine_worker_queue_port
         self.device_ids = ",".join([str(i) for i in range(self.worker_num_per_node)])
         self.device_ids = os.getenv("CUDA_VISIBLE_DEVICES", self.device_ids)

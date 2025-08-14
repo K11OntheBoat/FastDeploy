@@ -1179,21 +1179,34 @@ class GPUModelRunner(ModelRunnerBase):
         #     pass
         #     return None
 
+        debug_rank = paddle.distributed.get_rank()
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Entering execute_model.")
+
         if self.fd_config.parallel_config.is_attention_role:
+            print(f"=== ModelRunner, Rank [{debug_rank}]: Role is Attention, proceeding.")
             pass
         else:
             # is_moe_role
+            print(f"=== ModelRunner, Rank [{debug_rank}]: Role is MoE, calling model and returning early.")
             model_output = self.model(None, None)
+            print(f"=== ModelRunner, Rank [{debug_rank}]: MoE role finished model call, exiting execute_model.")
             return None
 
 
+        # 从这里开始，只有 is_attention_role (包括 rank 0) 的卡会执行
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Step 1 - Prepare inputs.")
         # 1. Prepare inputs of model and sampler.
         skip_idx_list = self._get_skip_idx(model_forward_batch)
         self._prepare_inputs()
         self.sampler.pre_process(skip_idx_list)
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Step 1 - Done.")
 
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Step 2 - Padding inputs.")
         # 2. Padding inputs for cuda graph
         self.padding_cudagraph_inputs()
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Step 2 - Done.")
+
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Step 3 - Execute model (calling self.model.forward).")
 
         # 3. Execute model
         if self.enable_mm:
@@ -1204,10 +1217,13 @@ class GPUModelRunner(ModelRunnerBase):
             )
             hidden_states = model_output
         else:
+            
             model_output = self.model(
                 ids_remove_padding=self.share_inputs["ids_remove_padding"],
                 forward_meta=self.forward_meta,
             )
+            print(f"=== ModelRunner, Rank [{debug_rank}]: Step 3 - self.model.forward has returned.")
+
             hidden_states = rebuild_padding(
                 model_output,
                 self.share_inputs["cum_offsets"],
@@ -1217,7 +1233,9 @@ class GPUModelRunner(ModelRunnerBase):
                 (self.share_inputs["output_padding_offset"] if self.speculative_decoding else None),
                 self.parallel_config.max_model_len,
             )
+            print(f"=== ModelRunner, Rank [{debug_rank}]: Step 3 - rebuild_padding done, all Done.")
 
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Step 4 - Compute logits and Sample.")
         # 4. Compute logits, Sample
         logits = self.model.compute_logits(hidden_states)
 
@@ -1252,7 +1270,9 @@ class GPUModelRunner(ModelRunnerBase):
                 paddle.distributed.broadcast(self.share_inputs["accept_num"], 0)
                 paddle.distributed.broadcast(self.share_inputs["step_idx"], 0)
                 paddle.distributed.broadcast(self.share_inputs["stop_flags"], 0)
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Step 4 - Done.")
 
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Step 5 - Post Process.")
         # 5. Post Process
         model_output_data = ModelOutputData(
             next_tokens=self.share_inputs["next_tokens"],
@@ -1297,6 +1317,8 @@ class GPUModelRunner(ModelRunnerBase):
             speculative_decoding=self.speculative_decoding,
             skip_save_output=skip_save_output,
         )
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Step 5 - Done.")
+
 
         # 6. Speculative decode
         if self.speculative_decoding:
@@ -1304,7 +1326,8 @@ class GPUModelRunner(ModelRunnerBase):
                 self.proposer.run(full_hidden_states=model_output)
             else:
                 self.proposer.run(share_inputs=self.share_inputs)
-
+        
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Step 7 - Update state.")
         # 7. Updata 'infer_seed' and step_cuda()
         self.share_inputs["infer_seed"].add_(self.infer_seed_increment)
         self.share_inputs["infer_seed"][:] %= self.MAX_INFER_SEED
@@ -1319,6 +1342,8 @@ class GPUModelRunner(ModelRunnerBase):
 
             self._update_chunked_prefill(model_forward_batch)
             self._add_cache(model_forward_batch)
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Step 7 - Done.")
+        print(f"=== ModelRunner, Rank [{debug_rank}]: Exiting execute_model successfully.")
         return None
 
     def _add_cache(self, model_forward_batch) -> None:
