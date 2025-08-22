@@ -1237,7 +1237,9 @@ class GPUModelRunner(ModelRunnerBase):
 
         print(f"=== ModelRunner, Rank [{debug_rank}]: Step 4 - Compute logits and Sample.")
         # 4. Compute logits, Sample
+        # paddle.device.synchronize()
         logits = self.model.compute_logits(hidden_states)
+        # paddle.device.synchronize()
 
         if not self.speculative_decoding:
             set_value_by_flags_and_idx(
@@ -1249,13 +1251,16 @@ class GPUModelRunner(ModelRunnerBase):
                 self.share_inputs["step_idx"],
                 self.share_inputs["stop_flags"],
             )
+            # paddle.device.synchronize()
             sampler_output = self.sampler(
                 logits,
                 self.sampling_metadata,
                 skip_idx_list,
             )
+            # paddle.device.synchronize()
             if self.parallel_config.tensor_parallel_size > 1:
                 paddle.distributed.broadcast(sampler_output.sampled_token_ids, 0)
+            # paddle.device.synchronize()
 
         else:
             self.sampler(
@@ -1408,7 +1413,8 @@ class GPUModelRunner(ModelRunnerBase):
 
         # Reset block table and kv cache with global block num
         # print("===RyanDebug, comments 1270#  self.initialize_kv_cache() ===!!!!")
-        self.initialize_kv_cache()
+        if self.fd_config.parallel_config.is_attention_role:
+            self.initialize_kv_cache()
 
         # Reset free list
         free_list = list(

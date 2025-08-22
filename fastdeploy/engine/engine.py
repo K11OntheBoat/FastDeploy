@@ -229,7 +229,12 @@ class LLMEngine:
         if self.cfg.splitwise_role != "mixed":
             # 单机逻辑
             self.engine_worker_queue.available_prefill_instances.put(1)
-            self.split_mode_get_tasks()
+
+            if self.cfg.parallel_config.enable_expert_parallel and self.cfg.parallel_config.data_parallel_size > 1:
+                print("===RyanDebug, Hzz1-MoE Should Not use split_mode_get_tasks ====")
+                # 屏蔽 Hzz1 MoE
+                self.split_mode_get_tasks()
+            
             if self.cfg.scheduler_config.name == "splitwise":
                 self.splitwise_receive_thread = threading.Thread(target=self.split_connector.start_receiver, args=())
                 self.splitwise_receive_thread.daemon = True

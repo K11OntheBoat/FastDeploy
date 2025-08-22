@@ -128,7 +128,8 @@ class CacheMessager:
 
             elif protocol == "rdma":
                 logger.info(f"splitwise_role rdma: {self.splitwise_role}, rank: {self.rank}, gpu_id: {gpu_id}")
-
+                from fastdeploy.utils import is_port_available
+                assert is_port_available("0.0.0.0", int(rdma_port)), f"The parameter `rdma_por`:{rdma_port} is already in use. "
                 self.messager[protocol] = RDMACommManager(
                     splitwise_role,
                     rank,
