@@ -937,8 +937,7 @@ class GPUModelRunner(ModelRunnerBase):
                 model_output = self.model(
                     ids_remove_padding=self.share_inputs["ids_remove_padding"],
                     forward_meta=self.forward_meta,
-                )
-
+                )                
                 hidden_states = rebuild_padding(
                     model_output,
                     self.share_inputs["cum_offsets"],
@@ -1223,6 +1222,10 @@ class GPUModelRunner(ModelRunnerBase):
                 forward_meta=self.forward_meta,
             )
             print(f"=== ModelRunner, Rank [{debug_rank}]: Step 3 - self.model.forward has returned.")
+
+            if model_output is None:
+                # no need do 后处理！
+                return None
 
             hidden_states = rebuild_padding(
                 model_output,
