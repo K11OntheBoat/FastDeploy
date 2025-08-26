@@ -452,6 +452,7 @@ class Ernie4_5_Model(nn.Layer):
             if ids_remove_padding.shape[0] == 0:
                 pass
             else:
+                print("==RyanDebug, the real bs is : ", ids_remove_padding.shape[0])
                 hidden_states = self.embed_tokens(ids_remove_padding=ids_remove_padding)
                 residual = None
                 for i in range(3):
@@ -558,8 +559,8 @@ class Ernie4_5_Model(nn.Layer):
         self.barrier_id = -1
         def zkk_barrier():
             self.barrier_id += 1
-            # paddle.device.synchronize()
-            # paddle.distributed.barrier()
+            #paddle.device.synchronize()
+            #paddle.distributed.barrier()
             #print("到达", self.barrier_id)
             #paddle.device.synchronize()
 
@@ -567,12 +568,12 @@ class Ernie4_5_Model(nn.Layer):
         if IsH20:
 
             def dispatch_wait(j):
-                print(f"dispatch_wait({j})")
+                #print(f"dispatch_wait({j})")
                 a = dispatch_events[j].pop()
                 tmp = send_hooks[j].pop()()
                 
             def combine_wait(j):
-                print(f"combine_wait({j})")
+                #print(f"combine_wait({j})")
                 a = combine_events[j].pop()
                 # a.current_stream_wait()
                 
@@ -583,7 +584,7 @@ class Ernie4_5_Model(nn.Layer):
 
             def compute_atten(layer_id, i):
                 #print(f"compute_atten({layer_id}, {i})")
-                print(f"[H20] Computing Attention for layer {layer_id}, microbatch {i}")
+                #print(f"[H20] Computing Attention for layer {layer_id}, microbatch {i}")
                 hidden_states, residual, topk_idx, topk_weights = self.layers[layer_id].forward_attn(
                                                                   attention_in_out[i].attn_metadata, 
                                                                   attention_in_out[i].forward_meta, 
@@ -597,7 +598,7 @@ class Ernie4_5_Model(nn.Layer):
                 attention_in_out[i].residual = residual
             
             def dispatch_send(i):
-                print(f"dispatch_send({i})")
+                #print(f"dispatch_send({i})")
                 _, handle, event, a2e_isend_hook = runner.buffer.a2e_isend_two_stage_v3(
                     attention_in_out[i].hidden_states,
                     attention_in_out[i].topk_idx,
@@ -612,7 +613,7 @@ class Ernie4_5_Model(nn.Layer):
                 dispatch_events[i].appendleft(event)
 
             def combine_receive(i):
-                print(f"combine_receive({i})")
+                #print(f"combine_receive({i})")
                 e2a_x, event, e2a_irecv_hook = runner.buffer.e2a_irecv_two_stage_v3(
                     attention_in_out[i].topk_idx,
                     attention_in_out[i].topk_weights,
@@ -628,8 +629,10 @@ class Ernie4_5_Model(nn.Layer):
             for layer_id in range(3, self.num_layers):
                 for j in range(split_num):
                     compute_atten(layer_id, j)
+                    zkk_barrier()
                     dispatch_send(j)
                     dispatch_wait(j)
+                    zkk_barrier()
                     combine_receive(j)
                     combine_wait(j)
 
@@ -641,7 +644,7 @@ class Ernie4_5_Model(nn.Layer):
             moe_out = [None] * split_num
 
             def dispatch_wait(j):
-                print(f"dispatch_wait({j})")
+                #print(f"dispatch_wait({j})")
                 a = dispatch_events[j].pop()
                 # a.current_stream_wait()
                 tmp = recv_hooks[j].pop()()
@@ -649,7 +652,7 @@ class Ernie4_5_Model(nn.Layer):
                 
 
             def combine_wait(j):
-                print(f"combine_wait({j})")
+                #print(f"combine_wait({j})")
                 a = combine_events[j].pop()
                 # a.current_stream_wait()
                 
@@ -657,7 +660,7 @@ class Ernie4_5_Model(nn.Layer):
                 #tmp.current_stream_wait()
 
             def dispatch_receive(i):
-                print(f"dispatch_receive({i})")
+                #print(f"dispatch_receive({i})")
                 (
                     packed_recv_x,
                     packed_recv_count,
@@ -681,12 +684,12 @@ class Ernie4_5_Model(nn.Layer):
 
             def compute_moe(layer_id, i):
                 #print(f"compute_moe({layer_id}, {i})")
-                print(f"[H100/MoE] Computing MoE FFN for layer {layer_id}, microbatch {i}")
+                #print(f"[H100/MoE] Computing MoE FFN for layer {layer_id}, microbatch {i}")
                 ffn_out = self.layers[layer_id].compute_moe_ffn(moe_input[i][0], moe_input[i][1])
                 moe_out[i] = ffn_out
 
             def combine_send(i):
-                print(f"combine_send({i})")
+                #print(f"combine_send({i})")
                 event, e2a_isend_hook = runner.buffer.e2a_isend_two_stage_v3(
                     moe_out[i], 
                     runner.top_k,
@@ -699,9 +702,11 @@ class Ernie4_5_Model(nn.Layer):
 
             for layer_id in range(3, self.num_layers):
                 for j in range(split_num):
+                    zkk_barrier()
                     dispatch_receive(j)
                     dispatch_wait(j)
                     compute_moe(layer_id, j)
+                    zkk_barrier()
                     combine_send(j)
                     combine_wait(j)
 
