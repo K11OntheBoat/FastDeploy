@@ -452,7 +452,6 @@ class Ernie4_5_Model(nn.Layer):
             if ids_remove_padding.shape[0] == 0:
                 pass
             else:
-                print("==RyanDebug, the real bs is : ", ids_remove_padding.shape[0])
                 hidden_states = self.embed_tokens(ids_remove_padding=ids_remove_padding)
                 residual = None
                 for i in range(3):
@@ -559,9 +558,9 @@ class Ernie4_5_Model(nn.Layer):
         self.barrier_id = -1
         def zkk_barrier():
             self.barrier_id += 1
-            #paddle.device.synchronize()
-            #paddle.distributed.barrier()
-            #print("到达", self.barrier_id)
+            paddle.device.synchronize()
+            paddle.distributed.barrier()
+            # print("到达", self.barrier_id)
             #paddle.device.synchronize()
 
         # 先只搞第三层！
@@ -584,7 +583,6 @@ class Ernie4_5_Model(nn.Layer):
 
             def compute_atten(layer_id, i):
                 #print(f"compute_atten({layer_id}, {i})")
-                #print(f"[H20] Computing Attention for layer {layer_id}, microbatch {i}")
                 hidden_states, residual, topk_idx, topk_weights = self.layers[layer_id].forward_attn(
                                                                   attention_in_out[i].attn_metadata, 
                                                                   attention_in_out[i].forward_meta, 
@@ -625,16 +623,36 @@ class Ernie4_5_Model(nn.Layer):
                 recv_hooks[i].appendleft(e2a_irecv_hook)
 
                 combine_events[i].appendleft(event)
+            
+            compute_atten(3, 0)
+            dispatch_send(0)
+            dispatch_wait(0)
+            zkk_barrier()
 
+            compute_atten(3, 1)
+            
             for layer_id in range(3, self.num_layers):
-                for j in range(split_num):
+                tmp_split_num = range(split_num)
+                if layer_id == 3:
+                    tmp_split_num = [2]
+                for j in tmp_split_num:
+                    
+                    # 上一个batch
+                    dispatch_send((j-1+split_num)%split_num)
+                    dispatch_wait((j-1+split_num)%split_num)
+
                     compute_atten(layer_id, j)
-                    zkk_barrier()
-                    dispatch_send(j)
-                    dispatch_wait(j)
-                    zkk_barrier()
-                    combine_receive(j)
-                    combine_wait(j)
+
+                    # 上上个batch！
+                    combine_receive((j-2+split_num)%split_num)
+                    combine_wait((j-2+split_num)%split_num)
+            
+            dispatch_send(2)
+            dispatch_wait(2)
+            combine_receive(1)
+            combine_wait(1)
+            combine_receive(2)
+            combine_wait(2)
 
         else:
             # 搞一个大槽子放东西！
@@ -684,7 +702,6 @@ class Ernie4_5_Model(nn.Layer):
 
             def compute_moe(layer_id, i):
                 #print(f"compute_moe({layer_id}, {i})")
-                #print(f"[H100/MoE] Computing MoE FFN for layer {layer_id}, microbatch {i}")
                 ffn_out = self.layers[layer_id].compute_moe_ffn(moe_input[i][0], moe_input[i][1])
                 moe_out[i] = ffn_out
 
@@ -700,15 +717,40 @@ class Ernie4_5_Model(nn.Layer):
                 send_hooks[i].appendleft(e2a_isend_hook)
                 combine_events[i].appendleft(event)
 
+            dispatch_receive(0)
+            dispatch_wait(0)
+            zkk_barrier()
+            haha = 9
+            compute_moe(haha//3,0)
+            
+            dispatch_receive(1)
+            dispatch_wait(1)
+
             for layer_id in range(3, self.num_layers):
-                for j in range(split_num):
-                    zkk_barrier()
-                    dispatch_receive(j)
-                    dispatch_wait(j)
-                    compute_moe(layer_id, j)
-                    zkk_barrier()
-                    combine_send(j)
-                    combine_wait(j)
+                tmp_split_num = range(split_num)
+                if layer_id == 3:
+                    tmp_split_num = [1, 2]
+                if layer_id == self.num_layers - 1:
+                    tmp_split_num = [0, 1]
+                for j in tmp_split_num:
+                    
+                    # 上一个batch
+                    combine_send((j-1+split_num)%split_num)
+                    combine_wait((j-1+split_num)%split_num)
+
+                    haha += 1
+                    compute_moe(haha//3,j)
+
+                    # 下一个batch
+                    dispatch_receive((j+1)%split_num)
+                    dispatch_wait((j+1)%split_num)
+            
+            haha += 1
+            compute_moe(haha//3,2)
+            combine_send(1)
+            combine_wait(1)
+            combine_send(2)
+            combine_wait(2)
 
         paddle.distributed.barrier()
 
@@ -719,11 +761,11 @@ class Ernie4_5_Model(nn.Layer):
             residuals = paddle.concat([attention_in_out[j].residual for j in range(split_num)], axis=0)
             hidden_states = hidden_states + residuals
             out = self.norm(hidden_states)
-            print("[H20] Computation complete. Returning final tensor.")
+            print("===RyanDebug, H20 finish compute ! ====")
             return out
         else:
             # MoE机器返回None
-            print("[H100/MoE] All computations finished.")
+            print("===RyanDebug, H100 finish compute ! ====")
             return None
 
     def forward1(
