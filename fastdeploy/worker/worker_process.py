@@ -290,12 +290,12 @@ class PaddleDisWorkerProc:
                 print("===RyanDebug, after all_gather, the tmps is :", tmps)
                 total_ready_ranks = tmps.sum().item()
 
-                if total_ready_ranks == 0: 
+                if total_ready_ranks < 16: 
                     # 如果每一张卡上都没有任务. 继续等待
                     time.sleep(0.01)
                     continue
                 else:
-                    print("开始执行第一次推理")
+                    print("开始执行第一次推理, total_ready_ranks >= 16")
                     initial_sync_done = True
 
             print("==RyanDebug,seq_lens_this_time is :",self.worker.model_runner.share_inputs["seq_lens_this_time"])            

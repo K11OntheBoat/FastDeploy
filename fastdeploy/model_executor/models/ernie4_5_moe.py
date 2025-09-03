@@ -25,6 +25,7 @@ from paddle import nn
 from paddleformers.transformers import PretrainedModel
 from paddleformers.transformers.configuration_utils import PretrainedConfig
 from paddleformers.utils.log import logger
+import paddle.device.cuda.graphs as graphs
 
 from fastdeploy.config import FDConfig
 from fastdeploy.model_executor.forward_meta import ForwardMeta
@@ -629,6 +630,8 @@ class Ernie4_5_Model(nn.Layer):
             dispatch_wait(0)
             zkk_barrier()
 
+            cuda_graph = graphs.CUDAGraph()
+            cuda_graph.capture_begin()
             compute_atten(3, 1)
             
             for layer_id in range(3, self.num_layers):
@@ -654,6 +657,9 @@ class Ernie4_5_Model(nn.Layer):
             combine_receive(2)
             combine_wait(2)
 
+            cuda_graph.capture_end()
+            cuda_graph.replay()
+            
         else:
             # 搞一个大槽子放东西！
             moe_input = [None] * split_num
@@ -766,35 +772,6 @@ class Ernie4_5_Model(nn.Layer):
         else:
             # MoE机器返回None
             print("===RyanDebug, H100 finish compute ! ====")
-            return None
-
-    def forward1(
-        self,
-        ids_remove_padding: paddle.Tensor,
-        forward_meta: ForwardMeta,
-    ):  
-
-        IsH20 = self.fd_config.parallel_config.is_attention_role
-        hidden_states = None
-        if IsH20:
-            hidden_states = self.embed_tokens(ids_remove_padding=ids_remove_padding)
-            forward_meta.attn_backend.init_attention_metadata(forward_meta)
-        residual = None
-
-        if IsH20:
-            hidden_states = self.embed_tokens(ids_remove_padding=ids_remove_padding)
-            forward_meta.attn_backend.init_attention_metadata(forward_meta)
-            for i in range(3):
-                hidden_states, residual = self.layers[i].forward_old(forward_meta, hidden_states, residual)
-
-        for i in range(3, self.num_layers):
-            hidden_states, residual = self.layers[i](forward_meta, hidden_states, residual)
-
-        if IsH20:
-            hidden_states = hidden_states + residual
-            out = self.norm(hidden_states)
-            return out
-        else:
             return None
 
 
