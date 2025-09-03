@@ -77,7 +77,11 @@ std::vector<paddle::Tensor> AppendAttention(
     const paddle::optional<paddle::Tensor> &cache_v_zp,
     const paddle::optional<paddle::Tensor> &out_linear_shifts,
     const paddle::optional<paddle::Tensor> &out_linear_smooths,
+    const paddle::optional<paddle::Tensor> &mask_offset,
     const paddle::optional<paddle::Tensor> &kv_signal_data,
+    const paddle::optional<paddle::Tensor>& q_norm_weight,
+    const paddle::optional<paddle::Tensor>& k_norm_weight,
+    const float rms_norm_eps,
     const std::string &compute_dtype, const std::string &cache_quant_type_str,
     const bool use_neox_rotary_style, const bool rope_3d,
     const int max_input_length, const float quant_max_bound,
@@ -235,8 +239,16 @@ std::vector<paddle::Tensor> GetBlockShapeAndSplitKVBlock(
     const paddle::Tensor &seq_lens_encoder,
     const paddle::Tensor &seq_lens_decoder,
     const paddle::Tensor &seq_lens_this_time,
-    const int encoder_block_shape_q, const int decoder_block_shape_q,
-    const int group_size, const int block_size,
+    paddle::Tensor &decoder_batch_ids,          // Inplace
+    paddle::Tensor &decoder_tile_ids_per_batch, // Inplace
+    paddle::Tensor &decoder_num_blocks_x_cpu,   // Inplace, Pinned Memory
+    paddle::Tensor &max_len_tensor_cpu,         // Inplace, Pinned Memory
+    const int encoder_block_shape_q,
+    const int decoder_block_shape_q,
+    const int group_size,
+    const int block_size,
+    const int kv_num_heads,
+    const int decoder_chunk_size,
     const int decoder_step_token_num);
 
 std::vector<paddle::Tensor> GetPaddingOffset(const paddle::Tensor &input_ids,

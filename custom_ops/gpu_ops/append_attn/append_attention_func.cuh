@@ -905,12 +905,15 @@ template <typename T,
           uint32_t num_frags_y,
           uint32_t num_frags_z,
           bool IS_SYSTEM = false>
-__device__ __forceinline__ void mask_s(const uint32_t qo_idx_base,
+__device__ __forceinline__ void mask_s(const bool* attn_mask,
+                                       const uint32_t qo_idx_base,
                                        const uint32_t kv_idx_base,
                                        const uint32_t qo_len,
                                        const uint32_t kv_len,
                                        const uint32_t chunk_end,
-                                       float (*s_frag)[num_frags_z][8]) {
+                                       const uint32_t attn_mask_len,
+                                       float (*s_frag)[num_frags_z][8],
+                                       const int *mask_offset = nullptr) {
   const uint32_t tx = threadIdx.x;
 #pragma unroll
   for (uint32_t fx = 0; fx < num_frags_x; ++fx) {
@@ -924,10 +927,21 @@ __device__ __forceinline__ void mask_s(const uint32_t qo_idx_base,
                                  group_size,
                          kv_idx = kv_idx_base + fz * 16 + 2 * (tx % 4) +
                                   8 * (reg_id / 4) + reg_id % 2;
-          const bool out_of_boundary =
-              (causal
-                   ? (kv_idx > kv_len + q_idx - qo_len || (kv_idx >= chunk_end))
-                   : kv_idx >= chunk_end);
+          bool out_of_boundary;
+          if (mask_offset) {
+            out_of_boundary = q_idx < qo_len ? (kv_idx > mask_offset[q_idx]) : true;
+          } else {
+            out_of_boundary =
+                (causal
+                    ? (kv_idx > kv_len + q_idx - qo_len || (kv_idx >= chunk_end))
+                    : kv_idx >= chunk_end);
+            if (attn_mask != nullptr && kv_idx > kv_len - qo_len && kv_idx < chunk_end && q_idx < attn_mask_len) {
+              const int32_t mask_idx = q_idx * attn_mask_len + kv_idx - kv_len + qo_len;
+              bool mask = attn_mask[mask_idx];
+              out_of_boundary |= mask;
+            }
+          }
+
           if constexpr (std::is_same<T, half>::value) {
             s_frag[fx][fz][reg_id] =
                 out_of_boundary ? -5e4f : s_frag[fx][fz][reg_id];
@@ -935,6 +949,7 @@ __device__ __forceinline__ void mask_s(const uint32_t qo_idx_base,
             s_frag[fx][fz][reg_id] =
                 out_of_boundary ? -3.0e+30f : s_frag[fx][fz][reg_id];
           }
+          // printf("tid: %d. qk[%u,%u] = %f, mask: %d \n ", threadIdx.x, kv_idx, q_idx, static_cast<float>(s_frag[fx][fz][reg_id]), int(out_of_boundary));
         } else {
           const uint32_t q_idx = qo_idx_base,
                          kv_idx = kv_idx_base + fz * 16 + 2 * (tx % 4) +
@@ -2103,10 +2118,10 @@ template <typename T,
           typename OutT = T,
           bool ENABLE_PREFILL = true>
 __global__ void merge_multi_chunks_decoder_kernel(
-    const T *__restrict__ multi_out,    // [token_num, num_chunks, num_heads,
+    const T *__restrict__ multi_out,    // [token_num, max_num_chunks, num_heads,
                                         // head_dim]
-    const float *__restrict__ multi_m,  // [token_num, num_chunks, num_heads]
-    const float *__restrict__ multi_d,  // [token_num, num_chunks, num_heads]
+    const float *__restrict__ multi_m,  // [token_num, max_num_chunks, num_heads]
+    const float *__restrict__ multi_d,  // [token_num, max_num_chunks, num_heads]
     const int *__restrict__ seq_lens_q,
     const int *__restrict__ seq_lens_kv,
     const int *__restrict__ seq_lens_encoder,
@@ -2118,9 +2133,9 @@ __global__ void merge_multi_chunks_decoder_kernel(
     const float quant_min_bound,
     const float in_scale,
     const int max_seq_len,
-    const int num_chunks,
+    const int max_num_chunks,
     const int num_heads,
-    const int chunk_size,
+    const int *__restrict__ num_blocks_q_and_chunk_config, // {num_blocks_total_q, chunk_size, max_num_chunks_this_kv}
     const int head_dim) {
   const int vid = threadIdx.x, ty = threadIdx.y;
   const int bid = blockIdx.x, hid = blockIdx.y;
@@ -2128,6 +2143,7 @@ __global__ void merge_multi_chunks_decoder_kernel(
   __shared__ float md_smem[bdy * 2];
   const int start_token_idx = cu_seqlens_q[bid];
   const int seq_len_q = seq_lens_q[bid];
+  const int chunk_size = num_blocks_q_and_chunk_config[1];
   if (seq_len_q == 0) return;
   int seq_len_kv = seq_lens_kv[bid];
 
@@ -2170,13 +2186,13 @@ __global__ void merge_multi_chunks_decoder_kernel(
   }
 #pragma unroll 2
   for (int i = ty; i < num_chunks_this_seq; i += bdy) {
-    uint32_t offset = (bid * num_chunks + i) * num_heads + hid;
+    uint32_t offset = (bid * max_num_chunks + i) * num_heads + hid;
     float m_prev = m;
     float d_prev = d;
     const float m_now = multi_m[offset];
     const float d_now = multi_d[offset];
     m = max(m_prev, m_now);
-    offset = (bid * num_chunks * num_heads + i * num_heads + hid) * head_dim +
+    offset = (bid * max_num_chunks * num_heads + i * num_heads + hid) * head_dim +
              vid * vec_size;
     Load<T, vec_size>(&multi_out[offset], &load_vec);
     const float scale1 = __expf(m_prev - m), scale2 = __expf(m_now - m);
@@ -2250,7 +2266,8 @@ __global__ void merge_multi_chunks_v2_kernel(
     const int max_seq_len,
     const int num_chunks,
     const int num_heads,
-    const int chunk_size,
+    const int min_chunk_size,
+    const int *__restrict__ num_blocks_q_and_chunk_config, // {num_blocks_total_q, chunk_size, max_num_chunks_this_kv}
     const int head_dim,
     const int token_num,
     const int speculate_max_draft_token_num = 5) {
@@ -2258,6 +2275,10 @@ __global__ void merge_multi_chunks_v2_kernel(
   const int hid = blockIdx.y;
   __shared__ T smem[bdy * HEAD_DIM];
   __shared__ float md_smem[bdy * 2];
+  int chunk_size = min_chunk_size;
+  if (num_blocks_q_and_chunk_config){
+    chunk_size = num_blocks_q_and_chunk_config[1];
+  }
   for (int qid = blockIdx.x; qid < token_num; qid += gridDim.x) {
     const uint32_t bid = batch_id_per_token[qid];
     const uint32_t local_seq_id = qid - cu_seqlens_q[bid];

@@ -24,6 +24,11 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 import paddle
 from paddle.nn.functional.flash_attention import flash_attn_unpadded
 
+try:
+    from paddle.nn.functional.flash_attention import flash_attention_v3_varlen
+except:
+    flash_attention_v3_varlen = None
+
 from fastdeploy.model_executor.layers.attention.ops import (
     get_block_shape_and_split_kv_block,
     init_kv_signal_per_query,
@@ -64,17 +69,13 @@ class MLAAttentionMetadata(AttentionMetadata):
     MLAAttentionMetadata for Multi-Layer Attention
     """
 
-    max_len_kv: paddle.Tensor = None
-    set_max_lengths: int = -1
     encoder_batch_ids: paddle.Tensor = None
     encoder_tile_ids_per_batch: paddle.Tensor = None
     encoder_num_blocks: paddle.Tensor = None
     kv_batch_ids: paddle.Tensor = None
     kv_tile_ids_per_batch: paddle.Tensor = None
     kv_num_blocks: paddle.Tensor = None
-    decoder_batch_ids: paddle.Tensor = None
-    decoder_tile_ids_per_batch: paddle.Tensor = None
-    decoder_num_blocks: paddle.Tensor = None
+    max_len_kv: paddle.Tensor = None
 
     _dtype: paddle.dtype = paddle.bfloat16
     encoder_max_partition_size: int = 32768
@@ -82,13 +83,14 @@ class MLAAttentionMetadata(AttentionMetadata):
     block_tables: Optional[paddle.Tensor] = None
     rotary_embs: Optional[paddle.Tensor] = None
     attn_mask: Optional[paddle.Tensor] = None
-    encoder_block_shape_q: int = -1
-    decoder_block_shape_q: int = -1
     _fuse_kernel_compute_dtype: str = "bf16"
 
     # pd_disaggregation
     kv_signal_metadata: Optional[paddle.Tensor] = None
     kv_signal_data_list: List[Optional[paddle.Tensor]] = field(default_factory=list)
+
+    max_enc_len_this_time: Optional[paddle.Tensor] = None
+    max_dec_len_this_time: Optional[paddle.Tensor] = None
 
 
 class MLAAttentionBackend(AttentionBackend):
@@ -98,6 +100,7 @@ class MLAAttentionBackend(AttentionBackend):
 
     __infer_dynamic_dims_fields__ = ["attention_metadata"]
     attention_metadata: MLAAttentionMetadata
+    flash_attn_func: callable = None
 
     def __init__(
         self,
@@ -105,6 +108,8 @@ class MLAAttentionBackend(AttentionBackend):
         kv_num_heads: int,
         num_heads: int,
         head_dim: int,
+        encoder_block_shape_q: int = -1,
+        decoder_block_shape_q: int = -1,
     ) -> None:
         """
         MLAAttentionBackend __init__
@@ -113,7 +118,7 @@ class MLAAttentionBackend(AttentionBackend):
         self.attention_metadata: MLAAttentionMetadata = None
 
         # 基础配置
-        self.block_size: int = fd_config.parallel_config.block_size
+        self.block_size: int = fd_config.cache_config.block_size
         self.max_seq_len: int = fd_config.parallel_config.max_model_len
         self.rope_theta: float = (
             10000.0 if fd_config.model_config.rope_theta is None else fd_config.model_config.rope_theta
@@ -128,8 +133,11 @@ class MLAAttentionBackend(AttentionBackend):
 
         self.kv_num_heads: int = kv_num_heads
         self.num_heads: int = num_heads
+        self.group_size: int = self.num_heads // self.kv_num_heads
         self.head_dim: int = fd_config.model_config.head_dim
         self.num_layers: int = fd_config.model_config.num_hidden_layers
+        self.encoder_block_shape_q: int = encoder_block_shape_q
+        self.decoder_block_shape_q: int = decoder_block_shape_q
 
         # For Multi Head Latent Attention
         self.kv_lora_rank: int = fd_config.model_config.kv_lora_rank
@@ -149,11 +157,25 @@ class MLAAttentionBackend(AttentionBackend):
 
         self.rank, self.device_id = init_rank_and_device_id(fd_config)
 
+        if self.flash_attn_func is None:
+            prop = paddle.device.cuda.get_device_properties()
+            cc = prop.major * 10 + prop.minor
+            is_current_sm_supported = cc >= 90
+            is_paddle_supported = any(num >= 90 for num in paddle.version.cuda_archs())
+            if is_current_sm_supported and is_paddle_supported:
+                self.flash_attn_func = flash_attention_v3_varlen
+                print("The current platform supports Flash Attention V3.")
+                self.flash_attn_kwargs = {"softmax_scale": self.attn_softmax_scale}
+            else:
+                self.flash_attn_func = flash_attn_unpadded
+                self.flash_attn_kwargs = {"scale": self.attn_softmax_scale, "training": False}
+                print(
+                    "The current platform does not support Flash Attention V3, so Flash Attention V2 will be used instead."
+                )
+
     def init_attention_metadata(self, forward_meta: ForwardMeta):
         """Initialize attention metadata hence all layers in the forward pass can reuse it."""
         metadata = MLAAttentionMetadata()
-        metadata.encoder_block_shape_q = 64
-        metadata.decoder_block_shape_q = 16
         metadata.max_partition_size = 32768
         metadata.encoder_max_partition_size = self.max_seq_len
         metadata._dtype = paddle.get_default_dtype()
@@ -176,27 +198,25 @@ class MLAAttentionBackend(AttentionBackend):
             metadata.kv_batch_ids,
             metadata.kv_tile_ids_per_batch,
             metadata.kv_num_blocks,
-            metadata.decoder_batch_ids,
-            metadata.decoder_tile_ids_per_batch,
-            metadata.decoder_num_blocks,
             metadata.max_len_kv,
-            metadata.set_max_lengths,
         ) = get_block_shape_and_split_kv_block(
             forward_meta.seq_lens_encoder,
             forward_meta.seq_lens_decoder,
             forward_meta.seq_lens_this_time,
-            metadata.encoder_block_shape_q,
-            metadata.decoder_block_shape_q,
-            self.num_heads // self.kv_num_heads,
+            forward_meta.decoder_batch_ids,
+            forward_meta.decoder_tile_ids_per_batch,
+            forward_meta.decoder_num_blocks_cpu,
+            forward_meta.max_len_tensor_cpu,
+            self.encoder_block_shape_q,
+            self.decoder_block_shape_q,
+            self.group_size,
             self.block_size,
             self.speculate_max_draft_token_num + 1,
         )
 
         # MLA
-        metadata.max_enc_len_this_time = metadata.set_max_lengths[1]
-        metadata.max_dec_len_this_time = metadata.set_max_lengths[2]
-        forward_meta.max_enc_len_this_time = metadata.set_max_lengths[1]
-        forward_meta.max_dec_len_this_time = metadata.set_max_lengths[2]
+        metadata.max_enc_len_this_time = forward_meta.max_len_tensor_cpu[1]
+        metadata.max_dec_len_this_time = forward_meta.max_len_tensor_cpu[2]
 
         # pd_disaggregation
         metadata.kv_signal_data_list = [None] * self.num_layers
@@ -215,9 +235,6 @@ class MLAAttentionBackend(AttentionBackend):
             )
 
         self.attention_metadata: AttentionMetadata = metadata
-
-        forward_meta.decoder_batch_ids.copy_(metadata.decoder_batch_ids, False)
-        forward_meta.decoder_tile_ids_per_batch.copy_(metadata.decoder_tile_ids_per_batch, False)
 
     def get_attntion_meta(self) -> AttentionMetadata:
         """get_attntion_meta"""
@@ -277,7 +294,7 @@ class MLAAttentionBackend(AttentionBackend):
         )
 
         # Flash注意力计算
-        fmha_out = flash_attn_unpadded(
+        fmha_out = self.flash_attn_func(
             q,
             k,
             v,
@@ -285,9 +302,8 @@ class MLAAttentionBackend(AttentionBackend):
             forward_meta.cu_seqlens_k,
             metadata.max_enc_len_this_time,
             metadata.max_enc_len_this_time,
-            self.attn_softmax_scale,
-            causal=True,
-            training=False,
+            causal=self.causal,
+            **self.flash_attn_kwargs,
         )[0]
 
         return fmha_out
@@ -354,8 +370,8 @@ class MLAAttentionBackend(AttentionBackend):
             metadata.kv_num_blocks,
             forward_meta.decoder_batch_ids,
             forward_meta.decoder_tile_ids_per_batch,
-            metadata.decoder_num_blocks,
-            metadata.decoder_num_blocks,  # PaddleNLP 传入的是 decoder_num_blocks_cpu
+            forward_meta.decoder_num_blocks_cpu,
+            forward_meta.decoder_num_blocks_cpu,
             metadata.max_enc_len_this_time,
             metadata.max_dec_len_this_time,
             metadata.max_len_kv,
@@ -426,7 +442,7 @@ class MLAAttentionBackend(AttentionBackend):
             )
 
             # FA
-            fmha_out = flash_attn_unpadded(
+            fmha_out = self.flash_attn_func(
                 q,
                 k,
                 v,
@@ -434,9 +450,8 @@ class MLAAttentionBackend(AttentionBackend):
                 forward_meta.cu_seqlens_k,
                 metadata.max_enc_len_this_time,
                 metadata.max_enc_len_this_time,
-                self.attn_softmax_scale,
-                causal=True,
-                training=False,
+                causal=self.causal,
+                **self.flash_attn_kwargs,
             )[0]
 
             return fmha_out
@@ -476,8 +491,8 @@ class MLAAttentionBackend(AttentionBackend):
                 metadata.kv_num_blocks,
                 forward_meta.decoder_batch_ids,
                 forward_meta.decoder_tile_ids_per_batch,
-                metadata.decoder_num_blocks,
-                metadata.decoder_num_blocks,  # PaddleNLP 传入的是 decoder_num_blocks_cpu
+                forward_meta.decoder_num_blocks_cpu,
+                forward_meta.decoder_num_blocks_cpu,
                 metadata.max_enc_len_this_time,
                 metadata.max_dec_len_this_time,
                 metadata.max_len_kv,

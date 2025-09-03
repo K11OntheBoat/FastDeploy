@@ -72,7 +72,11 @@ std::vector<paddle::Tensor> AppendAttentionKernel(
     const paddle::optional<paddle::Tensor>& cache_v_zp,
     const paddle::optional<paddle::Tensor>& out_linear_shifts,
     const paddle::optional<paddle::Tensor>& out_linear_smooths,
+    const paddle::optional<paddle::Tensor>& mask_offset,
     const paddle::optional<paddle::Tensor>& kv_signal_data,
+    const paddle::optional<paddle::Tensor>& q_norm_weight,
+    const paddle::optional<paddle::Tensor>& k_norm_weight,
+    const float rms_norm_eps,
     const std::string& cache_quant_type_str,
     const bool use_neox_rotary_style,
     const bool rope_3d,
@@ -143,7 +147,7 @@ std::vector<paddle::Tensor> AppendAttentionKernel(
   auto dispatch_CascadeAppendAttentionKernel = [&](auto temp_args,
         const paddle::Tensor& lambda_batch_ids,
         const paddle::Tensor& lambda_tile_ids_per_batch,
-        const int lambda_num_blocks_data,
+        const paddle::Tensor& lambda_num_blocks,
         const int lambda_block_shape_q,
         const int lambda_max_dec_len,
         const bool lambda_is_decoder,
@@ -171,7 +175,7 @@ std::vector<paddle::Tensor> AppendAttentionKernel(
           lambda_batch_ids,
           lambda_tile_ids_per_batch,
           cache_quant_type_str,
-          lambda_num_blocks_data,
+          lambda_num_blocks,
           lambda_block_shape_q,
           max_input_length,
           lambda_max_dec_len,
@@ -192,7 +196,6 @@ std::vector<paddle::Tensor> AppendAttentionKernel(
     if (max_just_dec_len_this_time > 0) {
       cudaEventRecord(main_event, main_stream);
     }
-    int encoder_num_blocks_data = encoder_num_blocks.data<int>()[0];
     int kv_num_blocks_data = kv_num_blocks.data<int>()[0];
 
     auto dispatch_EncoderWriteCacheWithRopeKernel = [&](auto temp_args) -> void  {
@@ -223,7 +226,10 @@ std::vector<paddle::Tensor> AppendAttentionKernel(
           main_stream,
           &qkv_out,
           const_cast<paddle::Tensor*>(&key_cache),
-          const_cast<paddle::Tensor*>(&value_cache));
+          const_cast<paddle::Tensor*>(&value_cache),
+          q_norm_weight,
+          k_norm_weight,
+          rms_norm_eps);
     };
 
     if (qkv_out_scales) {
@@ -237,12 +243,12 @@ std::vector<paddle::Tensor> AppendAttentionKernel(
       switch (fmha_out.dtype()) {
         case paddle::DataType::INT8:{
           int8_t tmp;
-          dispatch_CascadeAppendAttentionKernel(tmp, encoder_batch_ids, encoder_tile_ids_per_batch, encoder_num_blocks_data, encoder_block_shape_q, max_enc_dec_len_this_time, false, true, main_stream);
+          dispatch_CascadeAppendAttentionKernel(tmp, encoder_batch_ids, encoder_tile_ids_per_batch, encoder_num_blocks, encoder_block_shape_q, max_enc_dec_len_this_time, false, true, main_stream);
           break;
         }
         case paddle::DataType::FLOAT8_E4M3FN:{
           phi::dtype::float8_e4m3fn tmp;
-          dispatch_CascadeAppendAttentionKernel(tmp, encoder_batch_ids, encoder_tile_ids_per_batch, encoder_num_blocks_data, encoder_block_shape_q, max_enc_dec_len_this_time, false, true, main_stream);
+          dispatch_CascadeAppendAttentionKernel(tmp, encoder_batch_ids, encoder_tile_ids_per_batch, encoder_num_blocks, encoder_block_shape_q, max_enc_dec_len_this_time, false, true, main_stream);
           break;
         }
         default:{
@@ -252,12 +258,11 @@ std::vector<paddle::Tensor> AppendAttentionKernel(
       }
     } else {
       data_t tmp;
-      dispatch_CascadeAppendAttentionKernel(tmp, encoder_batch_ids, encoder_tile_ids_per_batch, encoder_num_blocks_data, encoder_block_shape_q, max_enc_dec_len_this_time, false, true, main_stream);
+      dispatch_CascadeAppendAttentionKernel(tmp, encoder_batch_ids, encoder_tile_ids_per_batch, encoder_num_blocks, encoder_block_shape_q, max_enc_dec_len_this_time, false, true, main_stream);
     }
   }
 
   if (max_just_dec_len_this_time > 0) {
-    int decoder_num_blocks_data = decoder_num_blocks.data<int>()[0];
     int max_len_kv_data = max_len_kv.data<int>()[0];
 
     cudaStream_t exec_stream;
@@ -339,7 +344,10 @@ std::vector<paddle::Tensor> AppendAttentionKernel(
             exec_stream,
             &qkv_out,
             const_cast<paddle::Tensor*>(&key_cache),
-            const_cast<paddle::Tensor*>(&value_cache));
+            const_cast<paddle::Tensor*>(&value_cache),
+            q_norm_weight,
+            k_norm_weight,
+            rms_norm_eps);
       } else {
         DecoderWriteCacheWithRoPEKernel<data_t, data_t>(
             meta_data,
@@ -363,7 +371,10 @@ std::vector<paddle::Tensor> AppendAttentionKernel(
             exec_stream,
             &qkv_out,
             const_cast<paddle::Tensor*>(&key_cache),
-            const_cast<paddle::Tensor*>(&value_cache));
+            const_cast<paddle::Tensor*>(&value_cache),
+            q_norm_weight,
+            k_norm_weight,
+            rms_norm_eps);
       }
     }
 
@@ -371,20 +382,20 @@ std::vector<paddle::Tensor> AppendAttentionKernel(
       switch (fmha_out.dtype()) {
         case paddle::DataType::INT8:{
         int8_t tmp;
-        dispatch_CascadeAppendAttentionKernel(tmp, decoder_batch_ids, decoder_tile_ids_per_batch, decoder_num_blocks_data,
+        dispatch_CascadeAppendAttentionKernel(tmp, decoder_batch_ids, decoder_tile_ids_per_batch, decoder_num_blocks,
         decoder_block_shape_q, max_len_kv_data, !speculate_decoder, !speculate_decoder, exec_stream);
           break;
         }
         case paddle::DataType::FLOAT8_E4M3FN:{
         phi::dtype::float8_e4m3fn tmp;
-        dispatch_CascadeAppendAttentionKernel(tmp, decoder_batch_ids, decoder_tile_ids_per_batch, decoder_num_blocks_data,
+        dispatch_CascadeAppendAttentionKernel(tmp, decoder_batch_ids, decoder_tile_ids_per_batch, decoder_num_blocks,
         decoder_block_shape_q, max_len_kv_data, !speculate_decoder, !speculate_decoder, exec_stream);
           break;
         }
       }
     } else {
         data_t tmp;
-        dispatch_CascadeAppendAttentionKernel(tmp, decoder_batch_ids, decoder_tile_ids_per_batch, decoder_num_blocks_data,
+        dispatch_CascadeAppendAttentionKernel(tmp, decoder_batch_ids, decoder_tile_ids_per_batch, decoder_num_blocks,
         decoder_block_shape_q, max_len_kv_data, !speculate_decoder, !speculate_decoder, exec_stream);
     }
     if (max_enc_len_this_time > 0) {
@@ -429,7 +440,11 @@ std::vector<paddle::Tensor> AppendAttention(
     const paddle::optional<paddle::Tensor>& cache_v_zp,
     const paddle::optional<paddle::Tensor>& out_linear_shifts,
     const paddle::optional<paddle::Tensor>& out_linear_smooths,
+    const paddle::optional<paddle::Tensor>& mask_offset,
     const paddle::optional<paddle::Tensor>& kv_signal_data,
+    const paddle::optional<paddle::Tensor>& q_norm_weight,
+    const paddle::optional<paddle::Tensor>& k_norm_weight,
+    const float rms_norm_eps,
     const std::string& compute_dtype,
     const std::string& cache_quant_type_str,
     const bool use_neox_rotary_style,
@@ -463,6 +478,10 @@ std::vector<paddle::Tensor> AppendAttention(
   meta_data.max_blocks_per_seq = block_tables.dims()[1];
   meta_data.block_size = key_cache.dims()[2];
   meta_data.batch_size = seq_lens_this_time.dims()[0];
+
+  if (mask_offset) {
+    meta_data.mask_offset = mask_offset.get().data<int>();
+  }
 
   auto dispatch_by_template = [&](auto temp_args) -> std::vector<paddle::Tensor> {
       return AppendAttentionKernel<type2value<decltype(temp_args)>::value>(
@@ -499,7 +518,11 @@ std::vector<paddle::Tensor> AppendAttention(
           cache_v_zp,
           out_linear_shifts,
           out_linear_smooths,
+          mask_offset,
           kv_signal_data,
+          q_norm_weight,
+          k_norm_weight,
+          rms_norm_eps,
           cache_quant_type_str,
           use_neox_rotary_style,
           rope_3d,
@@ -576,7 +599,11 @@ std::vector<std::vector<int64_t>> AppendAttentionInferShape(
     const paddle::optional<std::vector<int64_t>>& cache_v_zp_shape,
     const paddle::optional<std::vector<int64_t>>& out_linear_shifts_shape,
     const paddle::optional<std::vector<int64_t>>& out_linear_smooths_shape,
+    const paddle::optional<std::vector<int64_t>>& mask_offset_shape,
     const paddle::optional<std::vector<int64_t>>& kv_signal_data_shape,
+    const paddle::optional<std::vector<int64_t>>& q_norm_weight_shape,
+    const paddle::optional<std::vector<int64_t>>& k_norm_weight_shape,
+    const float rms_norm_eps,
     const std::string& compute_dtype,
     const std::string& cache_quant_type_str,
     const bool use_neox_rotary_style,
@@ -636,7 +663,11 @@ std::vector<paddle::DataType> AppendAttentionInferDtype(
     const paddle::optional<paddle::DataType>& cache_v_zp_dtype,
     const paddle::optional<paddle::DataType>& out_linear_shifts_dtype,
     const paddle::optional<paddle::DataType>& out_linear_smooths_dtype,
+    const paddle::optional<paddle::DataType>& mask_offset_dtype,
     const paddle::optional<paddle::DataType>& kv_signal_data_dtype,
+    const paddle::optional<paddle::DataType>& q_norm_weight_dtype,
+    const paddle::optional<paddle::DataType>& k_norm_weight_dtype,
+    const float rms_norm_eps,
     const std::string& compute_dtype,
     const std::string& cache_quant_type_str,
     const bool use_neox_rotary_style,
@@ -714,11 +745,15 @@ PD_BUILD_STATIC_OP(append_attention)
              paddle::Optional("cache_v_zp"),
              paddle::Optional("out_linear_shifts"),
              paddle::Optional("out_linear_smooths"),
-             paddle::Optional("kv_signal_data")})
+             paddle::Optional("mask_offset"),
+             paddle::Optional("kv_signal_data"),
+             paddle::Optional("q_norm_weight"),
+             paddle::Optional("k_norm_weight")})
     .Outputs({"fmha_out", "qkv_out", "key_cache_out", "value_cache_out"})
     .SetInplaceMap({{"key_cache", "key_cache_out"},
                     {"value_cache", "value_cache_out"}})
-    .Attrs({"compute_type: std::string",
+    .Attrs({"rms_norm_eps: float",
+            "compute_type: std::string",
             "cache_quant_type: std::string",
             "use_neox_rotary_style: bool",
             "rope_3d: bool",
@@ -732,7 +767,8 @@ PD_BUILD_STATIC_OP(append_attention)
             "encoder_max_partition_size: int",
             "speculate_max_draft_token_num: int",
             "causal: bool",
-            "speculate_decoder: bool"})
+            "speculate_decoder: bool",
+            })
     .SetKernelFn(PD_KERNEL(AppendAttention))
     .SetInferShapeFn(PD_INFER_SHAPE(AppendAttentionInferShape))
     .SetInferDtypeFn(PD_INFER_DTYPE(AppendAttentionInferDtype));

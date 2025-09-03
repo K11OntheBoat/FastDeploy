@@ -336,8 +336,10 @@ class Ernie4_5_DecoderLayer(nn.Layer):
 
         # 为了计算attn！
         forward_meta.attn_backend.attention_metadata = metadata
-        forward_meta.decoder_batch_ids.copy_(metadata.decoder_batch_ids, False)
-        forward_meta.decoder_tile_ids_per_batch.copy_(metadata.decoder_tile_ids_per_batch, False)
+        #forward_meta.decoder_batch_ids.copy_(metadata.decoder_batch_ids, False)
+        #forward_meta.decoder_tile_ids_per_batch.copy_(metadata.decoder_tile_ids_per_batch, False)
+        #forward_meta.decoder_num_blocks_cpu.copy_(metadata.decoder_num_blocks_cpu, False)
+        #forward_meta.max_len_tensor_cpu.copy_(metadata.max_len_tensor_cpu, False)
 
         hidden_states = self.self_attn(
             hidden_states=hidden_states,
@@ -630,8 +632,8 @@ class Ernie4_5_Model(nn.Layer):
             dispatch_wait(0)
             zkk_barrier()
 
-            cuda_graph = graphs.CUDAGraph()
-            cuda_graph.capture_begin()
+            # cuda_graph = graphs.CUDAGraph()
+            # cuda_graph.capture_begin()
             compute_atten(3, 1)
             
             for layer_id in range(3, self.num_layers):
@@ -657,8 +659,8 @@ class Ernie4_5_Model(nn.Layer):
             combine_receive(2)
             combine_wait(2)
 
-            cuda_graph.capture_end()
-            cuda_graph.replay()
+            # cuda_graph.capture_end()
+            # cuda_graph.replay()
             
         else:
             # 搞一个大槽子放东西！
