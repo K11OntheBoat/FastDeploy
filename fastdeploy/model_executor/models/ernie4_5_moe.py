@@ -559,8 +559,8 @@ class Ernie4_5_Model(nn.Layer):
         self.barrier_id = -1
         def zkk_barrier():
             self.barrier_id += 1
-            paddle.device.synchronize()
-            paddle.distributed.barrier()
+            # paddle.device.synchronize()
+            # paddle.distributed.barrier()
             # print("到达", self.barrier_id)
             #paddle.device.synchronize()
 
@@ -625,13 +625,16 @@ class Ernie4_5_Model(nn.Layer):
 
                 combine_events[i].appendleft(event)
             
+            
+            paddle.distributed.barrier()
+            
             compute_atten(3, 0)
             dispatch_send(0)
             dispatch_wait(0)
             zkk_barrier()
 
-            cuda_graph = graphs.CUDAGraph()
-            cuda_graph.capture_begin()
+            # cuda_graph = graphs.CUDAGraph()
+            # cuda_graph.capture_begin()
             compute_atten(3, 1)
             
             for layer_id in range(3, self.num_layers):
@@ -657,8 +660,8 @@ class Ernie4_5_Model(nn.Layer):
             combine_receive(2)
             combine_wait(2)
 
-            cuda_graph.capture_end()
-            cuda_graph.replay()
+            # cuda_graph.capture_end()
+            # cuda_graph.replay()
             
         else:
             # 搞一个大槽子放东西！
