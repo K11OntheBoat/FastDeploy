@@ -559,8 +559,8 @@ class Ernie4_5_Model(nn.Layer):
         self.barrier_id = -1
         def zkk_barrier():
             self.barrier_id += 1
-            # paddle.device.synchronize()
-            # paddle.distributed.barrier()
+            paddle.device.synchronize()
+            paddle.distributed.barrier()
             # print("到达", self.barrier_id)
             #paddle.device.synchronize()
 
@@ -625,8 +625,6 @@ class Ernie4_5_Model(nn.Layer):
 
                 combine_events[i].appendleft(event)
             
-            
-            paddle.distributed.barrier()
             
             compute_atten(3, 0)
             dispatch_send(0)

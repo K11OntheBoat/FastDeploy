@@ -482,6 +482,7 @@ __global__ void multi_query_append_attention_c8_warp1_4_kernel(
     const float quant_min_bound,
     const float in_scale,
     const uint32_t chunk_size,
+    const int num_blocks_x_cpu,
     T *__restrict__ tmp_workspace,  // split kv [token_num, num_chunks,
                                     // num_heads, head_dim]
     float *__restrict__ tmp_m,      // [token_num, num_chunks, num_heads]
@@ -507,10 +508,9 @@ __global__ void multi_query_append_attention_c8_warp1_4_kernel(
   const uint32_t num_chunks = gridDim.y;
   const uint32_t chunk_idx = blockIdx.y;
 
-  const uint32_t NUM_BLOCKS_X_CPU = 64;
   // gridDim.x 外部设置为8
   // Ryan Grid-stride loop: 每个 block 都会处理步长为 gridDim.x 的多个 tiles
-  for (uint32_t btid = blockIdx.x; btid < NUM_BLOCKS_X_CPU; btid += gridDim.x) {
+  for (uint32_t btid = blockIdx.x; btid < num_blocks_x_cpu; btid += gridDim.x) {
   
     // 下面的进入for循环
     const uint32_t batch_id = batch_ids[btid];
@@ -1266,8 +1266,11 @@ void MultiQueryAppendC8Attention(
     const int num_chunks = div_up(max_dec_len, chunk_size);
 
     // Ryan Fix SM
-    printf("===== RyanDebug Attn, Fix SM to 8 ====\n");
-    int ryan_fix_sm = 8;
+    static const char* FLAGS_ryan_fix_sm_env = std::getenv("FLAGS_RYAN_FIX_SM");
+    static const int ryan_fix_sm = FLAGS_ryan_fix_sm_env != nullptr ? std::stoi(std::string(FLAGS_ryan_fix_sm_env)) : 8;
+    printf("===== RyanDebug Attn, from env, Fix SM to %d ====\n", ryan_fix_sm);
+    printf("===== RyanDebug Attn, The num_blocks_x_cpu is : %d\n", num_blocks_x_cpu);
+
     dim3 grids(ryan_fix_sm, num_chunks, kv_num_heads);
     dim3 blocks(32, num_warps);
     if (num_chunks <= 1) {
@@ -1339,6 +1342,7 @@ void MultiQueryAppendC8Attention(
           quant_min_bound,
           in_scale,
           chunk_size,
+          num_blocks_x_cpu,
           nullptr,
           nullptr,
           nullptr,
@@ -1409,6 +1413,7 @@ void MultiQueryAppendC8Attention(
           quant_min_bound,
           in_scale,
           chunk_size,
+          num_blocks_x_cpu,
           reinterpret_cast<NV_TYPE *>(tmp_workspace->ptr()),
           static_cast<float *>(tmp_m->ptr()),
           static_cast<float *>(tmp_d->ptr()),
