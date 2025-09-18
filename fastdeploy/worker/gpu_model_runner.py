@@ -474,7 +474,9 @@ class GPUModelRunner(ModelRunnerBase):
         block_num = (
             input_length + self.parallel_config.block_size - 1
         ) // self.parallel_config.block_size + self.parallel_config.enc_dec_block_num
-
+        
+        print("====RyanDebug, in _dummy_prefill_inputs, the input_length is:", input_length)
+        print("====RyanDebug, in _dummy_prefill_inputs, the block_num is:", block_num)
         for i in range(batch_size):
             idx = i
             self.share_inputs["input_ids"][idx : idx + 1, :input_length] = np.array([5] * input_length)
@@ -498,6 +500,54 @@ class GPUModelRunner(ModelRunnerBase):
             self.share_inputs["block_tables"][idx : idx + 1, :block_num] = np.arange(
                 idx * block_num, (idx + 1) * block_num, 1
             )
+
+    def _reset_shared_inputs_after_dummy_run(self):
+        """
+        Reset the share_inputs buffers that were modified by the dummy run
+        to their initial state. This prevents state pollution for real requests.
+        """
+        print("====RyanDebug, Resetting shared inputs to initial state...======")
+        
+        max_num_seqs = self.parallel_config.max_num_seqs
+
+        # 1. 恢复序列和ID相关的缓冲区
+        # 初始值：用 pad_token_id 填充
+        self.share_inputs["input_ids"].fill_(self.parallel_config.pad_token_id)
+        self.share_inputs["prompt_ids"].fill_(self.parallel_config.pad_token_id)
+        # 初始值：-1
+        self.share_inputs["first_token_ids"].fill_(-1)
+
+        # 2. 恢复各种长度和索引相关的缓冲区
+        # 初始值：全部为 0
+        self.share_inputs["seq_lens_this_time"].fill_(0)
+        self.share_inputs["step_seq_lens_encoder"].fill_(0)
+        self.share_inputs["seq_lens_encoder"].fill_(0)
+        self.share_inputs["seq_lens_decoder"].fill_(0)
+        self.share_inputs["prompt_lens"].fill_(0)
+        self.share_inputs["step_idx"].fill_(0)
+        self.share_inputs["ori_seq_lens_encoder"].fill_(0)
+
+        # 3. 恢复请求参数相关的缓冲区 (这是最关键的部分)
+        # 初始值：恢复为 model_config 中的配置值
+        self.share_inputs["max_dec_len"].fill_(self.model_config.max_model_len)  # 关键：恢复为配置中的最大模型长度，而不是 dummy run 的 3
+        self.share_inputs["min_dec_len"].fill_(self.model_config.min_length)
+        self.share_inputs["temperature"].fill_(self.model_config.temperature)
+        
+        # 4. 恢复状态标志位
+        # 初始值：True，表示所有槽位都处于“停止”（即空闲）状态
+        self.share_inputs["stop_flags"].fill_(True)
+
+        # 5. 恢复资源管理相关的缓冲区 (Block Tables)
+        # 初始值：0
+        self.share_inputs["encoder_block_lens"].fill_(0)
+        # 初始值：-1，表示没有分配任何 block
+        self.share_inputs["block_tables"].fill_(-1)
+        
+        # 6. 恢复其他被修改的字段
+        # 初始值：0
+        self.share_inputs["eos_token_id"].fill_(0)
+        
+        print("====RyanDebug, Finished resetting shared inputs.======")
 
     def _init_share_inputs(self, max_num_seqs: int):
         """
@@ -916,8 +966,9 @@ class GPUModelRunner(ModelRunnerBase):
                 batch_size=batch_size,
                 expected_decode_len=expected_decode_len,
             )
+        
+        ii = 0
         while True:
-
             # 1. Initialize forward meta and attention meta data
             self._prepare_inputs()
 
@@ -937,7 +988,16 @@ class GPUModelRunner(ModelRunnerBase):
                 model_output = self.model(
                     ids_remove_padding=self.share_inputs["ids_remove_padding"],
                     forward_meta=self.forward_meta,
-                )                
+                )              
+
+
+                paddle.distributed.barrier()
+                ii += 1
+                if ii > 5:
+                    break
+                if model_output is None:
+                    continue
+
                 hidden_states = rebuild_padding(
                     model_output,
                     self.share_inputs["cum_offsets"],

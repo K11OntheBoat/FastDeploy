@@ -290,12 +290,12 @@ class PaddleDisWorkerProc:
                 print("===RyanDebug, after all_gather, the tmps is :", tmps)
                 total_ready_ranks = tmps.sum().item()
 
-                if total_ready_ranks < 16: 
+                if total_ready_ranks == 0: 
                     # 如果每一张卡上都没有任务. 继续等待
                     time.sleep(0.01)
                     continue
                 else:
-                    print("开始执行第一次推理, total_ready_ranks >= 16")
+                    print("开始执行第一次推理, total_ready_ranks > 0")
                     initial_sync_done = True
 
             print("==RyanDebug,seq_lens_this_time is :",self.worker.model_runner.share_inputs["seq_lens_this_time"])            
@@ -793,6 +793,18 @@ def run_worker_proc() -> None:
 
     # Trigger CUDAGraph capture
     worker_proc.worker.graph_optimize_and_warm_up_model()
+
+    # Initialize health status
+    # worker_proc.init_health_status()
+
+    print("====RyanDebug, Begin Dummy Run at workerProcess !======")
+    max_bs = worker_proc.worker.model_runner.fd_config.parallel_config.max_num_seqs
+    worker_proc.worker.model_runner._dummy_run(2*max_bs, max_bs, 10)
+    print("====RyanDebug, Finish Dummy Run at workerProcess !======")
+
+    # Buffer 清理:
+    worker_proc.worker.model_runner._reset_shared_inputs_after_dummy_run()
+    
 
     # Initialize health status
     worker_proc.init_health_status()

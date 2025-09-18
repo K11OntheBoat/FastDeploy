@@ -172,6 +172,7 @@ void append_decode_cache_int8_rope(const QKV_TYPE* qkv,
   constexpr int num_warps = 4;
   const int all_warps =
       ((num_heads + 2 * kv_num_heads) + num_warps - 1) / num_warps * num_warps;
+      // 64 + 2 * 8 = 72
   dim3 grids(bsz, all_warps / num_warps);
   if (use_neox_style) {
     if (qkv_out_scales) {

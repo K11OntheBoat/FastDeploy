@@ -291,16 +291,20 @@ std::vector<paddle::Tensor> GetBlockShapeAndSplitKVBlock(
     kv_num_blocks_x_cpu =
         GetEmptyTensor({0}, paddle::DataType::INT32, seq_lens_encoder.place());
   }
-  if (max_just_dec_len_this_time > 0) {
+  if (max_just_dec_len_this_time > 0 || true) {
     const uint32_t decoder_max_tile_size_per_bs_q =
         div_up((decoder_step_token_num * group_size), decoder_block_shape_q);
 
-    decoder_batch_ids =
-        GetEmptyTensor({bsz * decoder_max_tile_size_per_bs_q},
-                       paddle::DataType::INT32, seq_lens_encoder.place());
+    // decoder_batch_ids =
+    //     GetEmptyTensor({bsz * decoder_max_tile_size_per_bs_q},
+    //                    paddle::DataType::INT32, seq_lens_encoder.place());
+
+    decoder_batch_ids = paddle::full({bsz * decoder_max_tile_size_per_bs_q}, -1, paddle::DataType::INT32, seq_lens_encoder.place());
+    
     decoder_tile_ids_per_batch =
         GetEmptyTensor({bsz * decoder_max_tile_size_per_bs_q},
                        paddle::DataType::INT32, seq_lens_encoder.place());
+
     auto decoder_num_blocks_x =
         GetEmptyTensor({1}, paddle::DataType::INT32, seq_lens_encoder.place());
     split_q_block<<<1, 32, 0, stream>>>(
