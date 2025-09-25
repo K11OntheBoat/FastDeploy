@@ -95,7 +95,8 @@ paddle::Tensor GroupSwigluWithMasked(const paddle::Tensor& fc1_out_tensor,
     typedef typename traits_::data_t data_t;
 
     const int threads = 512;
-    const int blocks = 256;
+    // const int blocks = 256;
+    const int blocks = 108;
 
     #define dispatch_by_index(index) {\
     group_swiglu_with_masked_kernel<index, DataType_, VecSize><<<blocks, threads, 0, fc1_out_tensor.stream()>>>(\

@@ -455,6 +455,9 @@ class TokenProcessor:
                 token_id = int(tokens[i, 0])
                 token_ids = [token_id]
                 recovery_stop = token_id == RECOVERY_STOP_SIGNAL
+                
+                llm_logger.info(f"======RyanDebug: The token_ids after decode once is {token_ids}")
+
                 if recovery_stop:
                     llm_logger.info(f"recovery stop signal found at task {task_id}")
                 if not recovery_stop and token_id < 0:

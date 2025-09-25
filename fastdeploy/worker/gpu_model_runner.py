@@ -499,6 +499,54 @@ class GPUModelRunner(ModelRunnerBase):
                 idx * block_num, (idx + 1) * block_num, 1
             )
 
+    def _reset_shared_inputs_after_dummy_run(self):
+        """
+        Reset the share_inputs buffers that were modified by the dummy run
+        to their initial state. This prevents state pollution for real requests.
+        """
+        print("====RyanDebug, Resetting shared inputs to initial state...======")
+        
+        max_num_seqs = self.parallel_config.max_num_seqs
+
+        # 1. 恢复序列和ID相关的缓冲区
+        # 初始值：用 pad_token_id 填充
+        self.share_inputs["input_ids"].fill_(self.parallel_config.pad_token_id)
+        self.share_inputs["prompt_ids"].fill_(self.parallel_config.pad_token_id)
+        # 初始值：-1
+        self.share_inputs["first_token_ids"].fill_(-1)
+
+        # 2. 恢复各种长度和索引相关的缓冲区
+        # 初始值：全部为 0
+        self.share_inputs["seq_lens_this_time"].fill_(0)
+        self.share_inputs["step_seq_lens_encoder"].fill_(0)
+        self.share_inputs["seq_lens_encoder"].fill_(0)
+        self.share_inputs["seq_lens_decoder"].fill_(0)
+        self.share_inputs["prompt_lens"].fill_(0)
+        self.share_inputs["step_idx"].fill_(0)
+        self.share_inputs["ori_seq_lens_encoder"].fill_(0)
+
+        # 3. 恢复请求参数相关的缓冲区 (这是最关键的部分)
+        # 初始值：恢复为 model_config 中的配置值
+        self.share_inputs["max_dec_len"].fill_(self.model_config.max_model_len)  # 关键：恢复为配置中的最大模型长度，而不是 dummy run 的 3
+        self.share_inputs["min_dec_len"].fill_(self.model_config.min_length)
+        self.share_inputs["temperature"].fill_(self.model_config.temperature)
+        
+        # 4. 恢复状态标志位
+        # 初始值：True，表示所有槽位都处于“停止”（即空闲）状态
+        self.share_inputs["stop_flags"].fill_(True)
+
+        # 5. 恢复资源管理相关的缓冲区 (Block Tables)
+        # 初始值：0
+        self.share_inputs["encoder_block_lens"].fill_(0)
+        # 初始值：-1，表示没有分配任何 block
+        self.share_inputs["block_tables"].fill_(-1)
+        
+        # 6. 恢复其他被修改的字段
+        # 初始值：0
+        self.share_inputs["eos_token_id"].fill_(0)
+        
+        print("====RyanDebug, Finished resetting shared inputs.======")
+
     def _init_share_inputs(self, max_num_seqs: int):
         """
         Initialize all share buffers for model inputs.
@@ -776,23 +824,40 @@ class GPUModelRunner(ModelRunnerBase):
         """
         Initialize forward meta and attention meta data
         """
-        # Initialize forward meta
-        self.forward_meta = ForwardMeta(
-            input_ids=self.share_inputs["input_ids"],
-            ids_remove_padding=self.share_inputs["ids_remove_padding"],
-            rotary_embs=self.share_inputs["rope_emb"],
-            attn_backend=self.attn_backends[0],
-            decoder_batch_ids=self.share_inputs["decoder_batch_ids"],
-            decoder_tile_ids_per_batch=self.share_inputs["decoder_tile_ids_per_batch"],
-            seq_lens_encoder=self.share_inputs["seq_lens_encoder"],
-            seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
-            seq_lens_this_time=self.share_inputs["seq_lens_this_time"],
-            batch_id_per_token=self.share_inputs["batch_id_per_token"],
-            cu_seqlens_q=self.share_inputs["cu_seqlens_q"],
-            cu_seqlens_k=self.share_inputs["cu_seqlens_k"],
-            block_tables=self.share_inputs["block_tables"],
-            caches=self.share_inputs["caches"],
-        )
+        if self.fd_config.parallel_config.is_attention_role:
+            # Initialize forward meta
+            self.forward_meta = ForwardMeta(
+                input_ids=self.share_inputs["input_ids"],
+                ids_remove_padding=self.share_inputs["ids_remove_padding"],
+                rotary_embs=self.share_inputs["rope_emb"],
+                attn_backend=self.attn_backends[0],
+                decoder_batch_ids=self.share_inputs["decoder_batch_ids"],
+                decoder_tile_ids_per_batch=self.share_inputs["decoder_tile_ids_per_batch"],
+                seq_lens_encoder=self.share_inputs["seq_lens_encoder"],
+                seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+                seq_lens_this_time=self.share_inputs["seq_lens_this_time"],
+                batch_id_per_token=self.share_inputs["batch_id_per_token"],
+                cu_seqlens_q=self.share_inputs["cu_seqlens_q"],
+                cu_seqlens_k=self.share_inputs["cu_seqlens_k"],
+                block_tables=self.share_inputs["block_tables"],
+                caches=self.share_inputs["caches"],
+            )
+        else:
+            self.forward_meta = ForwardMeta(
+                input_ids=self.share_inputs["input_ids"],
+                ids_remove_padding=self.share_inputs["ids_remove_padding"],
+                rotary_embs=self.share_inputs["rope_emb"],
+                attn_backend=self.attn_backends[0],
+                decoder_batch_ids=self.share_inputs["decoder_batch_ids"],
+                decoder_tile_ids_per_batch=self.share_inputs["decoder_tile_ids_per_batch"],
+                seq_lens_encoder=self.share_inputs["seq_lens_encoder"],
+                seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+                seq_lens_this_time=self.share_inputs["seq_lens_this_time"],
+                batch_id_per_token=self.share_inputs["batch_id_per_token"],
+                cu_seqlens_q=self.share_inputs["cu_seqlens_q"],
+                cu_seqlens_k=self.share_inputs["cu_seqlens_k"],
+                block_tables=self.share_inputs["block_tables"],
+                caches=None)
 
         # Update Batch type for cuda graph
         # TODO(gongshaotian): Use seq_lens_encoder to set is_decode_batch
@@ -916,8 +981,10 @@ class GPUModelRunner(ModelRunnerBase):
                 batch_size=batch_size,
                 expected_decode_len=expected_decode_len,
             )
+        
+        ii = 0
         while True:
-
+            
             # 1. Initialize forward meta and attention meta data
             self._prepare_inputs()
 
@@ -937,7 +1004,13 @@ class GPUModelRunner(ModelRunnerBase):
                 model_output = self.model(
                     ids_remove_padding=self.share_inputs["ids_remove_padding"],
                     forward_meta=self.forward_meta,
-                )
+                )              
+                paddle.distributed.barrier()
+                ii += 1
+                if ii > 5:
+                    break
+                if model_output is None:
+                    continue
 
                 hidden_states = rebuild_padding(
                     model_output,
@@ -1173,17 +1246,40 @@ class GPUModelRunner(ModelRunnerBase):
             intermediate_tensors:
         """
         # NOTE(wufeisheng): For Expert Parallelism
-        if not self.not_need_stop():
-            self._execute_empty_input()
+        # if not self.not_need_stop():
+        #     # self._execute_empty_input()
+        #     # return None
+        #     pass
+        #     return None
+
+        debug_rank = paddle.distributed.get_rank()
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Entering execute_model.")
+
+        if self.fd_config.parallel_config.is_attention_role:
+            #print(f"=== ModelRunner, Rank [{debug_rank}]: Role is Attention, proceeding.")
+            pass
+        else:
+            # is_moe_role
+            #print(f"=== ModelRunner, Rank [{debug_rank}]: Role is MoE, calling model and returning early.")
+            model_output = self.model(None, None)
+            #print(f"=== ModelRunner, Rank [{debug_rank}]: MoE role finished model call, exiting execute_model.")
             return None
 
+
+        # 从这里开始，只有 is_attention_role (包括 rank 0) 的卡会执行
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 1 - Prepare inputs.")
         # 1. Prepare inputs of model and sampler.
         skip_idx_list = self._get_skip_idx(model_forward_batch)
         self._prepare_inputs()
         self.sampler.pre_process(skip_idx_list)
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 1 - Done.")
 
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 2 - Padding inputs.")
         # 2. Padding inputs for cuda graph
         self.padding_cudagraph_inputs()
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 2 - Done.")
+
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 3 - Execute model (calling self.model.forward).")
 
         # 3. Execute model
         if self.enable_mm:
@@ -1194,10 +1290,17 @@ class GPUModelRunner(ModelRunnerBase):
             )
             hidden_states = model_output
         else:
+            
             model_output = self.model(
                 ids_remove_padding=self.share_inputs["ids_remove_padding"],
                 forward_meta=self.forward_meta,
             )
+            #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 3 - self.model.forward has returned.")
+
+            if model_output is None:
+                # no need do 后处理！
+                return None
+
             hidden_states = rebuild_padding(
                 model_output,
                 self.share_inputs["cum_offsets"],
@@ -1207,9 +1310,13 @@ class GPUModelRunner(ModelRunnerBase):
                 (self.share_inputs["output_padding_offset"] if self.speculative_decoding else None),
                 self.parallel_config.max_model_len,
             )
+            #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 3 - rebuild_padding done, all Done.")
 
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 4 - Compute logits and Sample.")
         # 4. Compute logits, Sample
+        # paddle.device.synchronize()
         logits = self.model.compute_logits(hidden_states)
+        # paddle.device.synchronize()
 
         if not self.speculative_decoding:
             set_value_by_flags_and_idx(
@@ -1221,13 +1328,16 @@ class GPUModelRunner(ModelRunnerBase):
                 self.share_inputs["step_idx"],
                 self.share_inputs["stop_flags"],
             )
+            # paddle.device.synchronize()
             sampler_output = self.sampler(
                 logits,
                 self.sampling_metadata,
                 skip_idx_list,
             )
+            # paddle.device.synchronize()
             if self.parallel_config.tensor_parallel_size > 1:
                 paddle.distributed.broadcast(sampler_output.sampled_token_ids, 0)
+            # paddle.device.synchronize()
 
         else:
             self.sampler(
@@ -1242,7 +1352,9 @@ class GPUModelRunner(ModelRunnerBase):
                 paddle.distributed.broadcast(self.share_inputs["accept_num"], 0)
                 paddle.distributed.broadcast(self.share_inputs["step_idx"], 0)
                 paddle.distributed.broadcast(self.share_inputs["stop_flags"], 0)
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 4 - Done.")
 
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 5 - Post Process.")
         # 5. Post Process
         model_output_data = ModelOutputData(
             next_tokens=self.share_inputs["next_tokens"],
@@ -1287,6 +1399,8 @@ class GPUModelRunner(ModelRunnerBase):
             speculative_decoding=self.speculative_decoding,
             skip_save_output=skip_save_output,
         )
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 5 - Done.")
+
 
         # 6. Speculative decode
         if self.speculative_decoding:
@@ -1294,7 +1408,8 @@ class GPUModelRunner(ModelRunnerBase):
                 self.proposer.run(full_hidden_states=model_output)
             else:
                 self.proposer.run(share_inputs=self.share_inputs)
-
+        
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 7 - Update state.")
         # 7. Updata 'infer_seed' and step_cuda()
         self.share_inputs["infer_seed"].add_(self.infer_seed_increment)
         self.share_inputs["infer_seed"][:] %= self.MAX_INFER_SEED
@@ -1309,6 +1424,8 @@ class GPUModelRunner(ModelRunnerBase):
 
             self._update_chunked_prefill(model_forward_batch)
             self._add_cache(model_forward_batch)
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Step 7 - Done.")
+        #print(f"=== ModelRunner, Rank [{debug_rank}]: Exiting execute_model successfully.")
         return None
 
     def _add_cache(self, model_forward_batch) -> None:
@@ -1373,7 +1490,8 @@ class GPUModelRunner(ModelRunnerBase):
 
         # Reset block table and kv cache with global block num
         # print("===RyanDebug, comments 1270#  self.initialize_kv_cache() ===!!!!")
-        # self.initialize_kv_cache()
+        if self.fd_config.parallel_config.is_attention_role:
+            self.initialize_kv_cache()
 
         # Reset free list
         free_list = list(

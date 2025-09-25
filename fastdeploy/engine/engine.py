@@ -123,7 +123,7 @@ class LLMEngine:
                 cfg.max_num_seqs, cfg, cfg.tensor_parallel_size, cfg.splitwise_role
             )
 
-        os.environ["INFERENCE_MSG_QUEUE_ID"] = str(self.cfg.engine_worker_queue_port)
+        os.environ["INFERENCE_MSG_QUEUE_ID"] = str(self.cfg.engine_worker_queue_port + self.cfg.parallel_config.local_data_parallel_id)
 
         self.split_connector = SplitwiseConnector(cfg, self.scheduler, self.engine_worker_queue, self.resource_manager)
 
@@ -198,14 +198,6 @@ class LLMEngine:
             )
             self.launched_cache_manager_signal.value[0] = 1
 
-        self.worker_proc = self._start_worker_service()
-        console_logger.info("Waitting worker processes ready...")
-        time.sleep(5)
-        self.worker_init_status = dict()
-        if not self.check_worker_initialize_status():
-            console_logger.error("Failed to launch worker processes, check log/workerlog.* for more details.")
-            return False
-
         # Start warmup if enabled
         if self.cfg.use_warmup:
             console_logger.info("Starting warmup")
@@ -237,7 +229,12 @@ class LLMEngine:
         if self.cfg.splitwise_role != "mixed":
             # 单机逻辑
             self.engine_worker_queue.available_prefill_instances.put(1)
-            self.split_mode_get_tasks()
+
+            if self.cfg.parallel_config.enable_expert_parallel and self.cfg.parallel_config.data_parallel_size > 1:
+                print("===RyanDebug, Hzz1-MoE Should Not use split_mode_get_tasks ====")
+                # 屏蔽 Hzz1 MoE
+                self.split_mode_get_tasks()
+            
             if self.cfg.scheduler_config.name == "splitwise":
                 self.splitwise_receive_thread = threading.Thread(target=self.split_connector.start_receiver, args=())
                 self.splitwise_receive_thread.daemon = True
@@ -254,6 +251,7 @@ class LLMEngine:
             time.sleep(1)
 
             if self.cfg.parallel_config.enable_expert_parallel and self.cfg.parallel_config.data_parallel_size > 1:
+                print("===RyanDebug, Hzz1-MoE Should Not show this, dp set to 1 ====")
                 self.dp_processed = []
                 for i in range(
                     1,
@@ -265,7 +263,7 @@ class LLMEngine:
                             target=start_expert_service,
                             args=(
                                 self.cfg,
-                                i + self.cfg.node_rank * self.cfg.worker_num_per_node,
+                                i + self.cfg.node_rank * self.cfg.worker_num_per_node,  
                                 self.ipc_signal_suffix,
                             ),
                         )
@@ -275,6 +273,15 @@ class LLMEngine:
                         + f" data parallel id {i}"
                     )
                     self.dp_processed[-1].start()
+
+
+        self.worker_proc = self._start_worker_service()
+        console_logger.info("Waitting worker processes ready...")
+        time.sleep(5)
+        self.worker_init_status = dict()
+        if not self.check_worker_initialize_status():
+            console_logger.error("Failed to launch worker processes, check log/workerlog.* for more details.")
+            return False
 
         console_logger.info(f"Worker processes are launched with {time.time() - start_time} seconds.")
         return True
@@ -1103,6 +1110,7 @@ class LLMEngine:
             if value:
                 arguments = arguments + f" --{worker_flag}"
         if self.cfg.nnode > 1:
+            print("===RyanDebug, when luanch , the self.cfg.nnode is:", self.cfg.nnode)
             pd_cmd = pd_cmd + f" --ips {','.join(self.cfg.ips)} --nnodes {len(self.cfg.ips)}"
         pd_cmd = pd_cmd + arguments + f" 2>{log_dir}/launch_worker.log"
         llm_logger.info(f"Launch worker service command: {pd_cmd}")

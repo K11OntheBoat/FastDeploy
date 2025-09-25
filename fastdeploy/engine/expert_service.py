@@ -267,8 +267,11 @@ class ExpertService:
             current_tasks = []
             for task in tasks:
                 cur_task_idx = self.resource_manager.req_dict[task.request_id]
+
+                print("===RyanDebug, the cur_task_idx is:", cur_task_idx)
                 del self.resource_manager.req_dict[task.request_id]
                 cur_task = self.resource_manager.tasks_list[cur_task_idx]
+                llm_logger.info(f"===RyanDebug, the cur_task is: {cur_task}")
                 if task.error_code != 200:
                     self.resource_manager.stop_flags[cur_task_idx] = True
                     self.resource_manager.tasks_list[cur_task_idx] = None

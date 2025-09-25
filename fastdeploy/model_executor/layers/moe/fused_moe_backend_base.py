@@ -46,17 +46,19 @@ class MoEMethodBase(QuantMethodBase):
         """
         if layer.ep_size > 1:
             if layer.fd_config.parallel_config.moe_phase == MoEPhase.DECODER:
-                from .ep import EPDecoderRunner
+                #from .ep import EPDecoderRunner
 
-                self.ep_decoder_runner = EPDecoderRunner(
-                    layer.top_k,
-                    layer.hidden_size,
-                    layer.num_experts,
-                    layer.fd_config.model_config.num_max_dispatch_tokens_per_rank,
-                    layer.ep_size,
-                    layer.ep_rank,
-                    layer.fd_config.model_config.redundant_experts_num,
-                )
+                # self.ep_decoder_runner = EPDecoderRunner(
+                #     layer.top_k,
+                #     layer.hidden_size,
+                #     layer.num_experts,
+                #     layer.fd_config.model_config.num_max_dispatch_tokens_per_rank,
+                #     layer.ep_size,
+                #     layer.ep_rank,
+                #     layer.fd_config.model_config.redundant_experts_num,
+                # )
+                from .ep import EPMegaRunner
+                self.ep_decoder_runner = EPMegaRunner(layer.fd_config)
             else:
                 from .ep import EPPrefillRunner
 

@@ -533,7 +533,7 @@ class ParallelConfig:
         self.tensor_parallel_size = tensor_parallel_size
         self.data_parallel_size = data_parallel_size
         self.enable_expert_parallel = enable_expert_parallel
-        self.expert_parallel_size = data_parallel_size
+        self.expert_parallel_size = 8
         self.local_data_parallel_id = 0
         self.enable_custom_all_reduce = enable_custom_all_reduce
 
@@ -705,7 +705,7 @@ class Config:
             self.master_ip = self.ips[0]
         else:
             self.ips = self.ips.split(",")
-            self.master_ip = self.ips[0]
+            self.master_ip = get_host_ip()
 
         if self.ips is None:
             self.nnode = 1
@@ -714,8 +714,14 @@ class Config:
             self.nnode = len(self.ips)
 
             for idx, ip in enumerate(self.ips):
-                if ip == self.master_ip:
+                if ip == get_host_ip():
                     self.node_rank = idx
+        
+
+        llm_logger.info(f"==RyanDebug. the self.node_rank is:{self.node_rank}")
+
+        if self.parallel_config.data_parallel_size > 1 :
+            self.master_ip = "0.0.0.0"
 
         self.max_model_len = max_model_len
         self.max_num_seqs = max_num_seqs
@@ -758,6 +764,8 @@ class Config:
         else:
             self.worker_num_per_node = num_ranks
 
+        self.parallel_config.local_data_parallel_id = self.node_rank * self.worker_num_per_node
+        
         self.engine_worker_queue_port = engine_worker_queue_port
         self.device_ids = ",".join([str(i) for i in range(self.worker_num_per_node)])
         self.device_ids = os.getenv("CUDA_VISIBLE_DEVICES", self.device_ids)

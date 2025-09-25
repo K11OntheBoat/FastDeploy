@@ -150,13 +150,18 @@ class PaddleDisWorkerProc:
             self.parallel_config.engine_worker_queue_port,
         )
         self.max_chips_per_node = 16 if current_platform.is_iluvatar() else 8
-        self.task_queue = TaskQueue(
-            address=task_address,
-            is_server=False,
-            num_client=self.parallel_config.tensor_parallel_size,
-            client_id=self.parallel_config.tensor_parallel_rank,
-            local_data_parallel_id=self.parallel_config.expert_parallel_rank,
-        )
+        print("===RyanDebug, the local_data_parallel_id=paddle.distributed.get_rank() is :", paddle.distributed.get_rank())
+        print("===RyanDebug, remove task_queue of Hzz1 , the self.fd_config.parallel_config.ep_rank is: ", self.fd_config.parallel_config.ep_rank)
+        
+        #if self.fd_config.parallel_config.ep_rank < 0:
+        if self.fd_config.parallel_config.is_attention_role:
+            self.task_queue = TaskQueue(
+                address=task_address,
+                is_server=False,
+                num_client=self.parallel_config.tensor_parallel_size,
+                client_id=self.parallel_config.tensor_parallel_rank,
+                local_data_parallel_id=paddle.distributed.get_rank(),
+            )
 
     def init_health_status(self) -> None:
         """
@@ -206,44 +211,64 @@ class PaddleDisWorkerProc:
         )
 
         # init exist_task_signal
-        workers_exist_task = np.zeros([self.parallel_config.expert_parallel_size], dtype=np.int32)
-        self.exist_task_signal = IPCSignal(
-            name="exist_task_signal",
-            array=workers_exist_task,
-            dtype=np.int32,
-            suffix=self.parallel_config.engine_pid,
-            create=False,
-        )
+        if self.fd_config.parallel_config.is_attention_role:
+            print("=== RyanDebug, set exist_task_signal of Attn ===")
+            workers_exist_task = np.zeros([self.parallel_config.expert_parallel_size], dtype=np.int32)
+            self.exist_task_signal = IPCSignal(
+                name="exist_task_signal",
+                array=workers_exist_task,
+                dtype=np.int32,
+                suffix=self.parallel_config.engine_pid,
+                create=False,
+            )
 
-        # init exist_swapped_task_signal
-        workers_swapped_task = np.zeros(shape=[self.parallel_config.expert_parallel_size], dtype=np.int32)
-        self.exist_swapped_task_signal = IPCSignal(
-            name="exist_swapped_task_signal",
-            array=workers_swapped_task,
-            dtype=np.int32,
-            suffix=self.parallel_config.engine_pid,
-            create=False,
-        )
+            # init exist_swapped_task_signal
+            workers_swapped_task = np.zeros(shape=[self.parallel_config.expert_parallel_size], dtype=np.int32)
+            self.exist_swapped_task_signal = IPCSignal(
+                name="exist_swapped_task_signal",
+                array=workers_swapped_task,
+                dtype=np.int32,
+                suffix=self.parallel_config.engine_pid,
+                create=False,
+            )
+        else:
+            print("=== RyanDebug, set exist_task_signal of MoE ===")
+            workers_exist_task = np.zeros([1], dtype=np.int32)
+            self.exist_task_signal = IPCSignal(
+                name="exist_task_signal",
+                array=workers_exist_task,
+                dtype=np.int32,
+                suffix=self.parallel_config.engine_pid,
+                create=False,
+            )
 
-        # init exist_prefill_task_signal
-        exist_prefill_task_signal_data = np.zeros([1], dtype=np.int32)
-        self.exist_prefill_task_signal = IPCSignal(
-            name="exist_prefill_task_signal",
-            array=exist_prefill_task_signal_data,
-            dtype=np.int32,
-            suffix=self.parallel_config.engine_pid,
-            create=False,
-        )
+            # init exist_prefill_task_signal
+            exist_prefill_task_signal_data = np.zeros([1], dtype=np.int32)
+            self.exist_prefill_task_signal = IPCSignal(
+                name="exist_prefill_task_signal",
+                array=exist_prefill_task_signal_data,
+                dtype=np.int32,
+                suffix=self.parallel_config.engine_pid,
+                create=False,
+            )
 
     def event_loop_ep(self) -> None:
         """
         Tmp loop function for ep utill DP is supported
         """
+        initial_sync_done = False
+        
         while True:
             self.worker_healthy_live_signal.value[self.local_rank % self.max_chips_per_node] = int(time.time())
+            assert self.fd_config.parallel_config.tensor_parallel_rank == 0
+            rank = paddle.distributed.get_rank()
 
-            if self.fd_config.parallel_config.tensor_parallel_rank == 0 and self.task_queue.num_tasks() > 0:
+            print("===RyanDebug event_loop_ep, Hzz1-MoE should not show?? ===, the rank is:", rank)
+            if rank < 16 and self.fd_config.parallel_config.tensor_parallel_rank == 0 and self.task_queue.num_tasks() > 0 :
+                
+                print("===RyanDebug, Attn begin GET_TASK! ====")
                 tasks, read_finish = self.task_queue.get_tasks()
+
 
                 req_dicts = []
                 for req_dict, bsz in tasks:
@@ -255,10 +280,32 @@ class PaddleDisWorkerProc:
                 )
                 # Process prefill inputs
                 self.worker.preprocess_new_task(req_dicts)
+            
+            if not initial_sync_done:
+                tmp = self.worker.model_runner.not_need_stop().item()
+                tmp_tensor = paddle.to_tensor(tmp, dtype='int32').reshape([1])
+                tmps = []
+                paddle.distributed.all_gather(tmps, tmp_tensor)
+                tmps = paddle.concat(tmps, axis=0)
+                print("===RyanDebug, after all_gather, the tmps is :", tmps)
+                total_ready_ranks = tmps.sum().item()
 
-            # Execute model to generate token. The generated token will be written to the buffer.
-            # These generated tokens can be obtained through get_output op.
+                if total_ready_ranks == 0: 
+                    # 如果每一张卡上都没有任务. 继续等待
+                    time.sleep(0.01)
+                    continue
+                else:
+                    print("开始执行第一次推理, total_ready_ranks > 0")
+                    initial_sync_done = True
+
+            print("==RyanDebug,seq_lens_this_time is :",self.worker.model_runner.share_inputs["seq_lens_this_time"])            
+            print("开始推理啦") # 这个日志现在表示“准备好执行模型了”
+            # Execute model to generate token.
             self.worker.execute_model()
+            #paddle.distributed.barrier()
+            #paddle.device.synchronize()
+            print("===RyanDebug, Finish one execute_model=====")
+
 
     def event_loop_normal(self) -> None:
         """Main event loop for Paddle Distrubuted Workers.
@@ -404,6 +451,7 @@ class PaddleDisWorkerProc:
 
         logger.info(f"------- num_blocks_global: {num_blocks_local} --------")
         # wait engine launch cache_manager
+        #if self.fd_config.parallel_config.is_attention_role:
         if self.parallel_config.enable_prefix_caching or self.parallel_config.splitwise_role != "mixed":
             launched_cache_manager_signal_data = np.zeros([1], dtype=np.int32)
             self.launched_cache_manager_signal = IPCSignal(
@@ -609,19 +657,26 @@ def initialize_fd_config(args, ranks: int = 1, local_rank: int = 0) -> FDConfig:
     parallel_config = ParallelConfig(vars(args))
     parallel_config.tensor_parallel_size = args.tensor_parallel_size
     parallel_config.tensor_parallel_rank = local_rank % args.tensor_parallel_size
-    parallel_config.expert_parallel_size = args.expert_parallel_size
+    print("===RyanDeubg, set expert_parallel_size to 8 =====")
+    parallel_config.expert_parallel_size = 8
+
+    # Hzz1-MoE only ep_rank
+    ep_rank = parallel_config.ep_rank
+    print("===RyanDebug, Hzz1-MoE only ep_rank = ", ep_rank)
+
     # config for EP
-    if args.expert_parallel_size > 1:
+    if args.expert_parallel_size > 1 and ep_rank >= 0:
+        print("===RyanDebug, Hzz1-MoE only !!!!!====")
         expert_parallel_rank = int(local_rank / args.tensor_parallel_size)
         if isinstance(model_config.moe_num_experts, list):
             num_experts = model_config.moe_num_experts[0]
         else:
             num_experts = model_config.moe_num_experts
 
-        num_experts_per_rank = num_experts // args.expert_parallel_size
-        num_experts_start_offset = expert_parallel_rank * num_experts_per_rank
+        num_experts_per_rank = num_experts // 8
+        num_experts_start_offset = ep_rank * num_experts_per_rank
 
-        parallel_config.expert_parallel_rank = expert_parallel_rank
+        parallel_config.expert_parallel_rank = ep_rank
         parallel_config.num_experts_per_rank = num_experts_per_rank
         parallel_config.num_experts_start_offset = num_experts_start_offset
 
@@ -738,6 +793,18 @@ def run_worker_proc() -> None:
 
     # Trigger CUDAGraph capture
     worker_proc.worker.graph_optimize_and_warm_up_model()
+
+    # Initialize health status
+    # worker_proc.init_health_status()
+
+    print("====RyanDebug, Begin Dummy Run at workerProcess !======")
+    max_bs = worker_proc.worker.model_runner.fd_config.parallel_config.max_num_seqs
+    worker_proc.worker.model_runner._dummy_run(2*max_bs, max_bs, 10)
+    print("====RyanDebug, Finish Dummy Run at workerProcess !======")
+
+    # Buffer 清理:
+    worker_proc.worker.model_runner._reset_shared_inputs_after_dummy_run()
+    
 
     # Initialize health status
     worker_proc.init_health_status()
