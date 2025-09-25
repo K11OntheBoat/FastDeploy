@@ -474,9 +474,7 @@ class GPUModelRunner(ModelRunnerBase):
         block_num = (
             input_length + self.parallel_config.block_size - 1
         ) // self.parallel_config.block_size + self.parallel_config.enc_dec_block_num
-        
-        print("====RyanDebug, in _dummy_prefill_inputs, the input_length is:", input_length)
-        print("====RyanDebug, in _dummy_prefill_inputs, the block_num is:", block_num)
+
         for i in range(batch_size):
             idx = i
             self.share_inputs["input_ids"][idx : idx + 1, :input_length] = np.array([5] * input_length)
@@ -826,23 +824,40 @@ class GPUModelRunner(ModelRunnerBase):
         """
         Initialize forward meta and attention meta data
         """
-        # Initialize forward meta
-        self.forward_meta = ForwardMeta(
-            input_ids=self.share_inputs["input_ids"],
-            ids_remove_padding=self.share_inputs["ids_remove_padding"],
-            rotary_embs=self.share_inputs["rope_emb"],
-            attn_backend=self.attn_backends[0],
-            decoder_batch_ids=self.share_inputs["decoder_batch_ids"],
-            decoder_tile_ids_per_batch=self.share_inputs["decoder_tile_ids_per_batch"],
-            seq_lens_encoder=self.share_inputs["seq_lens_encoder"],
-            seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
-            seq_lens_this_time=self.share_inputs["seq_lens_this_time"],
-            batch_id_per_token=self.share_inputs["batch_id_per_token"],
-            cu_seqlens_q=self.share_inputs["cu_seqlens_q"],
-            cu_seqlens_k=self.share_inputs["cu_seqlens_k"],
-            block_tables=self.share_inputs["block_tables"],
-            caches=self.share_inputs["caches"],
-        )
+        if self.fd_config.parallel_config.is_attention_role:
+            # Initialize forward meta
+            self.forward_meta = ForwardMeta(
+                input_ids=self.share_inputs["input_ids"],
+                ids_remove_padding=self.share_inputs["ids_remove_padding"],
+                rotary_embs=self.share_inputs["rope_emb"],
+                attn_backend=self.attn_backends[0],
+                decoder_batch_ids=self.share_inputs["decoder_batch_ids"],
+                decoder_tile_ids_per_batch=self.share_inputs["decoder_tile_ids_per_batch"],
+                seq_lens_encoder=self.share_inputs["seq_lens_encoder"],
+                seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+                seq_lens_this_time=self.share_inputs["seq_lens_this_time"],
+                batch_id_per_token=self.share_inputs["batch_id_per_token"],
+                cu_seqlens_q=self.share_inputs["cu_seqlens_q"],
+                cu_seqlens_k=self.share_inputs["cu_seqlens_k"],
+                block_tables=self.share_inputs["block_tables"],
+                caches=self.share_inputs["caches"],
+            )
+        else:
+            self.forward_meta = ForwardMeta(
+                input_ids=self.share_inputs["input_ids"],
+                ids_remove_padding=self.share_inputs["ids_remove_padding"],
+                rotary_embs=self.share_inputs["rope_emb"],
+                attn_backend=self.attn_backends[0],
+                decoder_batch_ids=self.share_inputs["decoder_batch_ids"],
+                decoder_tile_ids_per_batch=self.share_inputs["decoder_tile_ids_per_batch"],
+                seq_lens_encoder=self.share_inputs["seq_lens_encoder"],
+                seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+                seq_lens_this_time=self.share_inputs["seq_lens_this_time"],
+                batch_id_per_token=self.share_inputs["batch_id_per_token"],
+                cu_seqlens_q=self.share_inputs["cu_seqlens_q"],
+                cu_seqlens_k=self.share_inputs["cu_seqlens_k"],
+                block_tables=self.share_inputs["block_tables"],
+                caches=None)
 
         # Update Batch type for cuda graph
         # TODO(gongshaotian): Use seq_lens_encoder to set is_decode_batch
@@ -969,6 +984,7 @@ class GPUModelRunner(ModelRunnerBase):
         
         ii = 0
         while True:
+            
             # 1. Initialize forward meta and attention meta data
             self._prepare_inputs()
 
@@ -989,8 +1005,6 @@ class GPUModelRunner(ModelRunnerBase):
                     ids_remove_padding=self.share_inputs["ids_remove_padding"],
                     forward_meta=self.forward_meta,
                 )              
-
-
                 paddle.distributed.barrier()
                 ii += 1
                 if ii > 5:
